@@ -1,7 +1,0 @@
-Remplace cette ligne par le lien de ta video de demonstration.
-
-Exemples acceptables :
-- lien YouTube non repertorie
-- lien Google Drive partage
-- lien OneDrive partage
-- lien Loom
