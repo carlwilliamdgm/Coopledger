@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Notes de demonstration - CoopLedger</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      color: #1f2933;
+      line-height: 1.5;
+      margin: 48px;
+    }
+
+    h1 {
+      color: #166534;
+      font-size: 28px;
+      margin-bottom: 6px;
+    }
+
+    h2 {
+      color: #14532d;
+      font-size: 18px;
+      margin-top: 28px;
+      border-bottom: 1px solid #d1d5db;
+      padding-bottom: 6px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    ul, ol {
+      margin-top: 8px;
+      padding-left: 24px;
+    }
+
+    li {
+      margin-bottom: 6px;
+    }
+
+    .meta {
+      color: #52616b;
+      margin-bottom: 24px;
+    }
+
+    .box {
+      background: #f4f7f5;
+      border-left: 4px solid #22c55e;
+      padding: 12px 16px;
+      margin: 18px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Notes de demonstration - CoopLedger</h1>
+  <p class="meta">Prototype de traçabilite financiere pour une cooperative agricole, deploye sur Railway et connecte a Stellar Testnet.</p>
+
+  <div class="box">
+    <p><strong>Objectif de la demonstration :</strong> montrer comment une cooperative peut enregistrer une transaction financiere et obtenir une preuve blockchain sous forme de hash Stellar.</p>
+  </div>
+
+  <h2>Acteurs simules</h2>
+  <ul>
+    <li><strong>Tresoriere de la cooperative :</strong> saisit une cotisation, une depense ou une recette dans CoopLedger.</li>
+    <li><strong>Membre de la cooperative :</strong> consulte les transactions, les votes et les informations de gouvernance.</li>
+    <li><strong>Observateur ou partenaire :</strong> verifie qu'une transaction possede un hash blockchain consultable sur Stellar Testnet.</li>
+  </ul>
+
+  <h2>Flux demontre</h2>
+  <ol>
+    <li>Ouverture du prototype CoopLedger depuis le lien Railway.</li>
+    <li>Consultation du dashboard : solde, cotisations, depenses, membres actifs et votes en cours.</li>
+    <li>Navigation vers l'historique des transactions.</li>
+    <li>Creation d'une nouvelle transaction avec un libelle et un montant valide.</li>
+    <li>Envoi de la transaction vers le serveur Node.js.</li>
+    <li>Scellement de la transaction sur Stellar Testnet via une operation de type <em>manageData</em>.</li>
+    <li>Affichage du hash blockchain dans l'interface.</li>
+    <li>Consultation possible du hash sur l'explorateur Stellar Testnet.</li>
+  </ol>
+
+  <h2>Fonctionnalites visibles</h2>
+  <ul>
+    <li>Dashboard synthetique de la cooperative.</li>
+    <li>Historique de transactions de demonstration.</li>
+    <li>Ajout d'une transaction scellee sur Stellar Testnet.</li>
+    <li>Affichage du hash blockchain apres enregistrement.</li>
+    <li>Page de vote simulant la gouvernance collective.</li>
+    <li>Page membres simulant les informations de la cooperative.</li>
+  </ul>
+
+  <h2>Controle des erreurs</h2>
+  <p>Le prototype refuse les montants invalides avant l'enregistrement. La validation est faite dans l'interface et aussi cote serveur afin d'eviter qu'une valeur incorrecte soit envoyee sur Stellar.</p>
+
+  <h2>Limites du prototype</h2>
+  <ul>
+    <li>L'historique affiche dans l'application est un historique de demonstration.</li>
+    <li>Les nouvelles transactions apparaissent dans la session du navigateur, mais ne sont pas encore conservees dans une base de donnees applicative.</li>
+    <li>La preuve permanente est le hash enregistre sur Stellar Testnet.</li>
+  </ul>
+
+  <h2>Prochaines ameliorations</h2>
+  <ul>
+    <li>Ajouter une base de donnees pour conserver l'historique complet dans l'application.</li>
+    <li>Relire automatiquement les transactions depuis Stellar Testnet.</li>
+    <li>Ajouter une authentification pour differencier tresoriere, membres et observateurs.</li>
+    <li>Ameliorer le module de vote avec un enregistrement blockchain des resultats.</li>
+  </ul>
+</body>
+</html>
