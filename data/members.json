@@ -1,0 +1,37 @@
+[
+  {
+    "id": "001",
+    "nom": "Kofi AGBEKO",
+    "role": "President",
+    "cotisations": 60000,
+    "statut": "Actif"
+  },
+  {
+    "id": "002",
+    "nom": "Ama TCHAMDJA",
+    "role": "Tresoriere",
+    "cotisations": 60000,
+    "statut": "Actif"
+  },
+  {
+    "id": "003",
+    "nom": "Koffi BOUKPESSI",
+    "role": "Secretaire",
+    "cotisations": 45000,
+    "statut": "Actif"
+  },
+  {
+    "id": "004",
+    "nom": "Abla GNASSINGBE",
+    "role": "Membre",
+    "cotisations": 60000,
+    "statut": "Actif"
+  },
+  {
+    "id": "005",
+    "nom": "Yao DJOBO",
+    "role": "Membre",
+    "cotisations": 30000,
+    "statut": "Inactif"
+  }
+]

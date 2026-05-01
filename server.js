@@ -8,6 +8,7 @@ const { Horizon, Keypair, TransactionBuilder, Networks, Operation, BASE_FEE } = 
 const server = new Horizon.Server('https://horizon-testnet.stellar.org');
 const DATA_DIR = path.join(__dirname, 'data');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.json');
+const MEMBERS_FILE = path.join(DATA_DIR, 'members.json');
 
 function sendJson(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -26,6 +27,34 @@ function readTransactions() {
 function saveTransactions(transactions) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(transactions, null, 2));
+}
+
+function readMembers() {
+  try {
+    const data = fs.readFileSync(MEMBERS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveMembers(members) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(MEMBERS_FILE, JSON.stringify(members, null, 2));
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (err) {
+        reject(new Error('JSON invalide.'));
+      }
+    });
+  });
 }
 
 function parseMontant(value) {
@@ -84,6 +113,50 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/api/transactions') {
     sendJson(res, 200, { transactions: readTransactions() });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/api/members') {
+    sendJson(res, 200, { members: readMembers() });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/members') {
+    try {
+      const { nom, role, cotisations, statut } = await parseBody(req);
+      const nomNettoye = String(nom ?? '').trim();
+      const roleNettoye = String(role ?? '').trim();
+      const cotisationsValides = Number(String(cotisations ?? '').replace(/\s/g, '').replace(',', '.'));
+      const statutNettoye = String(statut || 'Actif').trim();
+
+      if (!nomNettoye) {
+        throw new Error('Le nom du membre est obligatoire.');
+      }
+
+      if (!roleNettoye) {
+        throw new Error('Le role du membre est obligatoire.');
+      }
+
+      if (!Number.isInteger(cotisationsValides) || cotisationsValides < 0) {
+        throw new Error('Les cotisations doivent etre un entier positif ou nul.');
+      }
+
+      const members = readMembers();
+      const nextNumber = members.length + 1;
+      const member = {
+        id: String(nextNumber).padStart(3, '0'),
+        nom: nomNettoye,
+        role: roleNettoye,
+        cotisations: cotisationsValides,
+        statut: statutNettoye
+      };
+
+      members.push(member);
+      saveMembers(members);
+      sendJson(res, 200, { success: true, member });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
     return;
   }
 

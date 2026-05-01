@@ -12,15 +12,20 @@
     <div class="logo">
       <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
     </div>
-    <div class="role-switcher">
-      <label for="role-select">Role simule</label>
-      <select id="role-select" onchange="changerRole(this.value)">
-        <option value="president">President</option>
-        <option value="tresoriere">Tresoriere</option>
-        <option value="membre">Membre</option>
-        <option value="observateur">Observateur</option>
+    <div class="login-panel">
+      <label for="profile-select">Connecte en tant que</label>
+      <select id="profile-select" onchange="connecterProfil(this.value)">
+        <option value="president">Kofi AGBEKO - President</option>
+        <option value="tresoriere">Ama TCHAMDJA - Tresoriere</option>
+        <option value="secretaire">Koffi BOUKPESSI - Secretaire</option>
+        <option value="membre">Abla GNASSINGBE - Membre</option>
+        <option value="observateur">Partenaire externe - Observateur</option>
       </select>
-      <p id="role-description">Peut proposer une operation soumise au vote.</p>
+      <div class="profile-card">
+        <strong id="profile-name">Kofi AGBEKO</strong>
+        <span id="profile-role">President</span>
+        <p id="profile-description">Peut proposer une operation soumise au vote et gerer la cooperative.</p>
+      </div>
     </div>
     <nav>
       <a href="#" class="nav-item active" onclick="showPage('dashboard')">📊 Dashboard</a>
@@ -32,7 +37,7 @@
     <div class="sidebar-footer">
       <p>Coopérative Agri-Kara</p>
       <p>de Broukou</p>
-      <p>120 membres</p>
+      <p id="sidebar-members-count">5 personnes</p>
     </div>
   </div>
 
@@ -185,9 +190,12 @@
 
     <!-- MEMBRES -->
     <div id="page-membres" class="page">
-      <h1>Membres — Coopérative Agri-Kara de Broukou</h1>
+      <div class="page-header">
+        <h1>Membres — Coopérative Agri-Kara de Broukou</h1>
+        <button id="add-member-btn" class="btn-primary" onclick="ajouterMembre()">+ Ajouter une personne</button>
+      </div>
       <div class="membres-stats">
-        <p>120 membres actifs · Région de Kara · Filière Maïs & Soja</p>
+        <p><span id="members-count">5</span> personnes enregistrées · Région de Kara · Filière Maïs & Soja</p>
       </div>
       <div class="table-container">
         <table>
@@ -200,41 +208,9 @@
               <th>Statut</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="members-list">
             <tr>
-              <td>001</td>
-              <td>Kofi AGBEKO</td>
-              <td>Président</td>
-              <td>60 000 FCFA</td>
-              <td><span class="badge-actif">Actif</span></td>
-            </tr>
-            <tr>
-              <td>002</td>
-              <td>Ama TCHAMDJA</td>
-              <td>Trésorière</td>
-              <td>60 000 FCFA</td>
-              <td><span class="badge-actif">Actif</span></td>
-            </tr>
-            <tr>
-              <td>003</td>
-              <td>Koffi BOUKPESSI</td>
-              <td>Membre</td>
-              <td>45 000 FCFA</td>
-              <td><span class="badge-actif">Actif</span></td>
-            </tr>
-            <tr>
-              <td>004</td>
-              <td>Abla GNASSINGBE</td>
-              <td>Membre</td>
-              <td>60 000 FCFA</td>
-              <td><span class="badge-actif">Actif</span></td>
-            </tr>
-            <tr>
-              <td>005</td>
-              <td>Yao DJOBO</td>
-              <td>Membre</td>
-              <td>30 000 FCFA</td>
-              <td><span class="badge-inactif">Inactif</span></td>
+              <td colspan="5">Chargement des membres...</td>
             </tr>
           </tbody>
         </table>

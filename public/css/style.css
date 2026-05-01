@@ -34,7 +34,7 @@ body {
 .logo-coop { color: #ffffff; }
 .logo-ledger { color: #4caf50; }
 
-.role-switcher {
+.login-panel {
   background: #10131c;
   border: 1px solid #2a2d3a;
   border-radius: 8px;
@@ -42,7 +42,7 @@ body {
   margin-bottom: 20px;
 }
 
-.role-switcher label {
+.login-panel label {
   display: block;
   color: #8b8fa8;
   font-size: 12px;
@@ -50,7 +50,7 @@ body {
   text-transform: uppercase;
 }
 
-.role-switcher select {
+.login-panel select {
   width: 100%;
   background: #1a1d27;
   border: 1px solid #383d50;
@@ -60,7 +60,32 @@ body {
   margin-bottom: 8px;
 }
 
-.role-switcher p {
+.profile-card {
+  background: #1a1d27;
+  border: 1px solid #2a2d3a;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.profile-card strong,
+.profile-card span {
+  display: block;
+}
+
+.profile-card strong {
+  color: #ffffff;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.profile-card span {
+  color: #4caf50;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.login-panel p {
   color: #8b8fa8;
   font-size: 12px;
   line-height: 1.4;
