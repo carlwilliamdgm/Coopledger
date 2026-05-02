@@ -20,6 +20,7 @@
       <div class="auth-grid">
         <div class="auth-panel">
           <p class="panel-label">Profils de démonstration</p>
+          <div id="existing-profiles">
           <button class="profile-login" onclick="loginDemoProfile('president')">
             <strong>Kofi AGBEKO</strong>
             <span>Président</span>
@@ -40,6 +41,7 @@
             <strong>Partenaire externe</strong>
             <span>Observateur</span>
           </button>
+          </div>
         </div>
 
         <form class="auth-panel" onsubmit="enregistrerProfil(event)">
@@ -101,21 +103,21 @@
       <h1>Dashboard</h1>
       <div class="solde-card">
         <p class="solde-label">Solde actuel de la coopérative</p>
-        <p class="solde-montant">1 250 000 FCFA</p>
+        <p id="coop-balance" class="solde-montant">0 FCFA</p>
         <p class="solde-blockchain">🔗 Enregistré sur Stellar Testnet</p>
       </div>
       <div class="stats-grid">
         <div class="stat-card">
           <p class="stat-label">Cotisations ce mois</p>
-          <p class="stat-value">480 000 FCFA</p>
+          <p id="monthly-contributions" class="stat-value">0 FCFA</p>
         </div>
         <div class="stat-card">
           <p class="stat-label">Dépenses ce mois</p>
-          <p class="stat-value">230 000 FCFA</p>
+          <p id="monthly-expenses" class="stat-value">0 FCFA</p>
         </div>
         <div class="stat-card">
           <p class="stat-label">Membres actifs</p>
-          <p class="stat-value">120</p>
+          <p id="active-members-count" class="stat-value">0</p>
         </div>
         <div class="stat-card">
           <p class="stat-label">Votes en cours</p>
@@ -259,6 +261,7 @@
               <th>Rôle</th>
               <th>Cotisations</th>
               <th>Statut</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody id="members-list">

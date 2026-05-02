@@ -132,6 +132,14 @@ function formatMontant(montant) {
   return `${prefix}${montant.toLocaleString('fr-FR')} FCFA`;
 }
 
+function formatAbsoluteMontant(montant) {
+  return `${Math.abs(montant).toLocaleString('fr-FR')} FCFA`;
+}
+
+function isCotisation(libelle) {
+  return String(libelle || '').toLowerCase().includes('cotisation');
+}
+
 function shortHash(hash) {
   return `${hash.substring(0, 16)}...`;
 }
@@ -162,7 +170,10 @@ function renderTransactions() {
     return `
       <tr>
         <td>${formatDate(transaction.date)}</td>
-        <td>${transaction.libelle}</td>
+        <td>
+          ${transaction.libelle}
+          ${transaction.memberName ? `<small class="linked-member">Membre : ${transaction.memberName}</small>` : ''}
+        </td>
         <td class="${isPositif ? 'montant-positif' : 'montant-negatif'}">
           ${formatMontant(transaction.montant)}
         </td>
@@ -176,6 +187,7 @@ function renderTransactions() {
 
   document.getElementById('proof-count').textContent = transactions.length;
   document.getElementById('proof-last').textContent = formatDate(transactions[0].date);
+  renderDashboard();
 }
 
 function renderMembers() {
@@ -195,11 +207,57 @@ function renderMembers() {
       <td>${member.role}</td>
       <td>${member.cotisations.toLocaleString('fr-FR')} FCFA</td>
       <td><span class="${member.statut === 'Actif' ? 'badge-actif' : 'badge-inactif'}">${member.statut}</span></td>
+      <td>
+        <div class="member-actions">
+        <button class="status-button" onclick="changerStatutMembre('${member.id}')" ${currentProfile?.canManageMembers ? '' : 'disabled'}>
+          ${member.statut === 'Actif' ? 'Suspendre' : 'Activer'}
+        </button>
+        <button class="delete-button" onclick="supprimerMembre('${member.id}')" ${currentProfile?.canManageMembers ? '' : 'disabled'}>
+          Supprimer
+        </button>
+        </div>
+      </td>
     </tr>
   `).join('');
 
   document.getElementById('members-count').textContent = members.length;
   document.getElementById('sidebar-members-count').textContent = `${members.length} personnes`;
+  document.getElementById('active-members-count').textContent = members.filter(member => member.statut === 'Actif').length;
+  renderExistingProfiles();
+}
+
+function renderDashboard() {
+  const balance = transactions.reduce((total, transaction) => total + transaction.montant, 0);
+  const contributions = transactions
+    .filter(transaction => transaction.montant > 0 && isCotisation(transaction.libelle))
+    .reduce((total, transaction) => total + transaction.montant, 0);
+  const expenses = transactions
+    .filter(transaction => transaction.montant < 0)
+    .reduce((total, transaction) => total + transaction.montant, 0);
+
+  document.getElementById('coop-balance').textContent = formatAbsoluteMontant(balance);
+  document.getElementById('monthly-contributions').textContent = formatAbsoluteMontant(contributions);
+  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(expenses);
+}
+
+function renderExistingProfiles() {
+  const container = document.getElementById('existing-profiles');
+  if (!container) return;
+
+  const memberButtons = members.map(member => `
+    <button class="profile-login" onclick="loginExistingMember('${member.id}')">
+      <strong>${member.nom}</strong>
+      <span>${member.role} · ${member.cotisations.toLocaleString('fr-FR')} FCFA cotisés</span>
+    </button>
+  `).join('');
+
+  container.innerHTML = `
+    ${memberButtons}
+    <button class="profile-login" onclick="loginDemoProfile('observateur')">
+      <strong>Partenaire externe</strong>
+      <span>Observateur</span>
+    </button>
+  `;
 }
 
 function openSession(profile) {
@@ -228,10 +286,24 @@ function applyPermissions() {
   document.querySelectorAll('.btn-pour, .btn-contre').forEach(button => {
     button.disabled = !currentProfile.canVote;
   });
+  renderMembers();
 }
 
 function loginDemoProfile(profileId) {
   openSession(profiles[profileId]);
+}
+
+function loginExistingMember(memberId) {
+  const member = members.find(item => item.id === memberId);
+  if (!member) return;
+
+  openSession({
+    id: member.id,
+    name: member.nom,
+    role: member.role,
+    cotisations: member.cotisations,
+    description: getProfileDescription(member.role)
+  });
 }
 
 function deconnecter() {
@@ -345,6 +417,18 @@ async function enregistrerTransaction() {
     return;
   }
 
+  let memberId = '';
+  if (montant > 0 && libelle.toLowerCase().includes('cotisation')) {
+    const choix = prompt(
+      'ID du membre concerne par cette cotisation (laisser vide si non applicable) :\n' +
+      members.map(member => `${member.id} - ${member.nom} (${member.cotisations.toLocaleString('fr-FR')} FCFA)`).join('\n')
+    )?.trim();
+
+    memberId = choix || '';
+  } else if (montant < 0) {
+    alert('Cette depense reduira le solde total de la cooperative, sans modifier les cotisations individuelles.');
+  }
+
   const btn = document.querySelector('.btn-primary');
   btn.textContent = 'Enregistrement sur blockchain...';
   btn.disabled = true;
@@ -353,7 +437,7 @@ async function enregistrerTransaction() {
     const response = await fetch('/api/transaction', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ libelle, montant })
+      body: JSON.stringify({ libelle, montant, memberId })
     });
 
     const data = await response.json();
@@ -363,6 +447,10 @@ async function enregistrerTransaction() {
     }
 
     transactions.unshift(data.transaction);
+    if (data.member) {
+      members = members.map(member => member.id === data.member.id ? data.member : member);
+      renderMembers();
+    }
     renderTransactions();
     afficherRecu(data.transaction.id);
     alert(`Transaction enregistree sur Stellar.\nHash : ${data.transaction.hash}`);
@@ -454,6 +542,74 @@ async function ajouterMembre() {
     alert(`${data.member.nom} a ete ajoute a la cooperative.`);
   } catch (error) {
     alert(error.message || 'Erreur lors de l ajout.');
+    console.error(error);
+  }
+}
+
+async function changerStatutMembre(memberId) {
+  if (!currentProfile?.canManageMembers) {
+    alert('Seuls le president et ses collaborateurs peuvent modifier le statut des comptes.');
+    return;
+  }
+
+  const member = members.find(item => item.id === memberId);
+  if (!member) return;
+
+  const statut = member.statut === 'Actif' ? 'Inactif' : 'Actif';
+
+  try {
+    const response = await fetch(`/api/members/${encodeURIComponent(memberId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statut })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Modification refusee.');
+    }
+
+    members = members.map(item => item.id === data.member.id ? data.member : item);
+    renderMembers();
+  } catch (error) {
+    alert(error.message || 'Erreur lors de la modification du statut.');
+    console.error(error);
+  }
+}
+
+async function supprimerMembre(memberId) {
+  if (!currentProfile?.canManageMembers) {
+    alert('Seuls le president et ses collaborateurs peuvent supprimer un compte.');
+    return;
+  }
+
+  if (currentProfile.id === memberId) {
+    alert('Vous ne pouvez pas supprimer le compte actuellement connecte.');
+    return;
+  }
+
+  const member = members.find(item => item.id === memberId);
+  if (!member) return;
+
+  const confirmed = confirm(`Supprimer ${member.nom} de la cooperative ? Cette action retire son profil de connexion.`);
+  if (!confirmed) return;
+
+  try {
+    const response = await fetch(`/api/members/${encodeURIComponent(memberId)}`, {
+      method: 'DELETE'
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Suppression refusee.');
+    }
+
+    members = members.filter(item => item.id !== data.member.id);
+    renderMembers();
+  } catch (error) {
+    alert(error.message || 'Erreur lors de la suppression.');
     console.error(error);
   }
 }

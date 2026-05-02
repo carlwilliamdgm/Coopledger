@@ -68,6 +68,10 @@ function parseMontant(value) {
   return montant;
 }
 
+function isCotisation(libelle) {
+  return String(libelle || '').toLowerCase().includes('cotisation');
+}
+
 // Enregistrer une transaction sur Stellar
 async function enregistrerStellar(libelle, montant) {
   const sourceKeypair = Keypair.fromSecret(process.env.SECRET_KEY);
@@ -160,18 +164,74 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'PATCH' && req.url.startsWith('/api/members/')) {
+    try {
+      const id = decodeURIComponent(req.url.split('/').pop());
+      const { statut } = await parseBody(req);
+      const statutNettoye = String(statut || '').trim();
+
+      if (!['Actif', 'Inactif'].includes(statutNettoye)) {
+        throw new Error('Statut invalide.');
+      }
+
+      const members = readMembers();
+      const member = members.find(item => item.id === id);
+
+      if (!member) {
+        throw new Error('Membre introuvable.');
+      }
+
+      member.statut = statutNettoye;
+      saveMembers(members);
+      sendJson(res, 200, { success: true, member });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && req.url.startsWith('/api/members/')) {
+    try {
+      const id = decodeURIComponent(req.url.split('/').pop());
+      const members = readMembers();
+      const member = members.find(item => item.id === id);
+
+      if (!member) {
+        throw new Error('Membre introuvable.');
+      }
+
+      saveMembers(members.filter(item => item.id !== id));
+      sendJson(res, 200, { success: true, member });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
+    return;
+  }
+
   // API Transaction
   if (req.method === 'POST' && req.url === '/api/transaction') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
       try {
-        const { libelle, montant } = JSON.parse(body);
+        const { libelle, montant, memberId } = JSON.parse(body);
         const libelleNettoye = String(libelle ?? '').trim();
         const montantValide = parseMontant(montant);
+        const linkedMemberId = String(memberId || '').trim();
 
         if (!libelleNettoye) {
           throw new Error('Le libelle est obligatoire.');
+        }
+
+        let linkedMember = null;
+        let members = readMembers();
+
+        if (linkedMemberId) {
+          linkedMember = members.find(member => member.id === linkedMemberId);
+
+          if (!linkedMember) {
+            throw new Error('Le membre associe est introuvable.');
+          }
         }
 
         const hash = await enregistrerStellar(libelleNettoye, montantValide);
@@ -182,14 +242,22 @@ const httpServer = http.createServer(async (req, res) => {
           montant: montantValide,
           hash,
           explorer: `https://stellar.expert/explorer/testnet/tx/${hash}`,
-          statut: 'Scelle'
+          statut: 'Scelle',
+          memberId: linkedMember?.id || null,
+          memberName: linkedMember?.nom || null
         };
+
+        if (linkedMember && isCotisation(libelleNettoye) && montantValide > 0) {
+          linkedMember.cotisations += montantValide;
+          saveMembers(members);
+          transaction.memberCotisations = linkedMember.cotisations;
+        }
 
         const transactions = readTransactions();
         transactions.unshift(transaction);
         saveTransactions(transactions);
 
-        sendJson(res, 200, { success: true, transaction });
+        sendJson(res, 200, { success: true, transaction, member: linkedMember });
       } catch (err) {
         sendJson(res, 400, { error: err.message });
       }

@@ -343,6 +343,13 @@ td {
   border-bottom: 1px solid #1e2130;
 }
 
+.linked-member {
+  display: block;
+  color: #8b8fa8;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 .montant-positif { color: #4caf50; font-weight: 600; }
 .montant-negatif { color: #f44336; font-weight: 600; }
 
@@ -394,6 +401,38 @@ td {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.status-button {
+  background: #242838;
+  border: 1px solid #383d50;
+  color: #ffffff;
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.status-button:hover {
+  background: #30364a;
+}
+
+.member-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.delete-button {
+  background: #3a1e1e;
+  border: 1px solid #6b2a2a;
+  color: #ffb4b4;
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.delete-button:hover {
+  background: #4a2525;
 }
 
 /* VOTE */
