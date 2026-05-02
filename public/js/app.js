@@ -1,7 +1,7 @@
 let transactions = [];
 let members = [];
 let demoIndex = 0;
-let currentProfile = 'president';
+let currentProfile = null;
 
 const profiles = {
   president: {
@@ -50,6 +50,39 @@ const profiles = {
     canManageMembers: false
   }
 };
+
+function getPermissions(role) {
+  const normalized = String(role || '').toLowerCase();
+
+  return {
+    canSuggest: normalized === 'president',
+    canTransact: normalized === 'tresoriere',
+    canVote: normalized === 'membre',
+    canManageMembers: ['president', 'tresoriere', 'secretaire'].includes(normalized)
+  };
+}
+
+function getProfileDescription(role) {
+  const permissions = getPermissions(role);
+
+  if (permissions.canSuggest) {
+    return 'Peut proposer une operation soumise au vote et gerer la cooperative.';
+  }
+
+  if (permissions.canTransact) {
+    return 'Peut ajouter une transaction financiere scellee et gerer les membres.';
+  }
+
+  if (permissions.canManageMembers) {
+    return 'Peut gerer les personnes de la cooperative et consulter les preuves.';
+  }
+
+  if (permissions.canVote) {
+    return 'Peut consulter les preuves et voter les operations.';
+  }
+
+  return 'Peut seulement consulter et verifier les preuves.';
+}
 
 const demoSteps = [
   {
@@ -169,20 +202,93 @@ function renderMembers() {
   document.getElementById('sidebar-members-count').textContent = `${members.length} personnes`;
 }
 
-function connecterProfil(profileId) {
-  currentProfile = profileId;
-  const config = profiles[currentProfile];
+function openSession(profile) {
+  const permissions = getPermissions(profile.role);
+  currentProfile = {
+    ...profile,
+    description: profile.description || getProfileDescription(profile.role),
+    ...permissions
+  };
 
-  document.getElementById('profile-name').textContent = config.name;
-  document.getElementById('profile-role').textContent = config.role;
-  document.getElementById('profile-description').textContent = config.description;
-  document.getElementById('new-transaction-btn').disabled = !config.canTransact;
-  document.getElementById('proposal-btn').disabled = !config.canSuggest;
-  document.getElementById('add-member-btn').disabled = !config.canManageMembers;
+  document.getElementById('auth-screen').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+  document.getElementById('profile-name').textContent = currentProfile.name;
+  document.getElementById('profile-role').textContent = currentProfile.role;
+  document.getElementById('profile-description').textContent = currentProfile.description;
+  applyPermissions();
+}
+
+function applyPermissions() {
+  if (!currentProfile) return;
+
+  document.getElementById('new-transaction-btn').disabled = !currentProfile.canTransact;
+  document.getElementById('proposal-btn').disabled = !currentProfile.canSuggest;
+  document.getElementById('add-member-btn').disabled = !currentProfile.canManageMembers;
 
   document.querySelectorAll('.btn-pour, .btn-contre').forEach(button => {
-    button.disabled = !config.canVote;
+    button.disabled = !currentProfile.canVote;
   });
+}
+
+function loginDemoProfile(profileId) {
+  openSession(profiles[profileId]);
+}
+
+function deconnecter() {
+  currentProfile = null;
+  arreterDemo();
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('auth-screen').classList.remove('hidden');
+}
+
+async function enregistrerProfil(event) {
+  event.preventDefault();
+
+  const name = document.getElementById('register-name').value.trim();
+  const role = document.getElementById('register-role').value;
+  const cotisations = Number(document.getElementById('register-cotisations').value || 0);
+
+  if (!name) {
+    alert('Le nom est obligatoire.');
+    return;
+  }
+
+  if (!Number.isInteger(cotisations) || cotisations < 0) {
+    alert('Les cotisations doivent etre un entier positif ou nul.');
+    return;
+  }
+
+  if (role !== 'Observateur') {
+    try {
+      const response = await fetch('/api/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nom: name, role, cotisations, statut: 'Actif' })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Enregistrement refuse.');
+      }
+
+      members.push(data.member);
+      renderMembers();
+    } catch (error) {
+      alert(error.message || 'Erreur lors de l enregistrement.');
+      console.error(error);
+      return;
+    }
+  }
+
+  openSession({
+    name,
+    role,
+    description: getProfileDescription(role)
+  });
+
+  event.target.reset();
+  document.getElementById('register-cotisations').value = '0';
 }
 
 async function chargerTransactions() {
@@ -222,7 +328,7 @@ function lireMontant(value) {
 }
 
 async function enregistrerTransaction() {
-  if (!profiles[currentProfile].canTransact) {
+  if (!currentProfile?.canTransact) {
     alert('Seule la tresoriere peut ajouter une transaction.');
     return;
   }
@@ -286,7 +392,7 @@ function fermerRecu() {
 }
 
 function suggererOperation() {
-  if (!profiles[currentProfile].canSuggest) {
+  if (!currentProfile?.canSuggest) {
     alert('Seul le president peut suggerer une operation.');
     return;
   }
@@ -310,7 +416,7 @@ function suggererOperation() {
 }
 
 async function ajouterMembre() {
-  if (!profiles[currentProfile].canManageMembers) {
+  if (!currentProfile?.canManageMembers) {
     alert('Seuls le president et ses collaborateurs peuvent ajouter une personne.');
     return;
   }
@@ -360,8 +466,7 @@ function lancerDemo() {
 
 function afficherEtapeDemo() {
   const step = demoSteps[demoIndex];
-  document.getElementById('profile-select').value = step.profile;
-  connecterProfil(step.profile);
+  openSession(profiles[step.profile]);
   showPage(step.page);
   document.getElementById('demo-title').textContent = step.title;
   document.getElementById('demo-text').textContent = step.text;
@@ -386,7 +491,6 @@ function arreterDemo() {
 document.addEventListener('DOMContentLoaded', () => {
   chargerTransactions();
   chargerMembres();
-  connecterProfil(currentProfile);
 
   document.querySelectorAll('.nav-item').forEach(item => {
     item.addEventListener('click', function(event) {
@@ -400,7 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.querySelectorAll('.btn-pour, .btn-contre').forEach(btn => {
     btn.addEventListener('click', function() {
-      if (!profiles[currentProfile].canVote) {
+      if (!currentProfile?.canVote) {
         alert('Seuls les membres peuvent voter.');
         return;
       }

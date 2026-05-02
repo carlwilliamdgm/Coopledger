@@ -6,10 +6,106 @@
 }
 
 body {
-  display: flex;
   background: #0f1117;
   color: #ffffff;
   min-height: 100vh;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.auth-card {
+  width: min(980px, 100%);
+  background: #1a1d27;
+  border: 1px solid #2a2d3a;
+  border-radius: 12px;
+  padding: 28px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.auth-brand {
+  margin-bottom: 24px;
+}
+
+.auth-brand .logo {
+  margin-bottom: 18px;
+}
+
+.auth-brand h1 {
+  margin-bottom: 8px;
+}
+
+.auth-brand p {
+  color: #a4a8ba;
+  max-width: 620px;
+}
+
+.auth-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.auth-panel {
+  background: #10131c;
+  border: 1px solid #2a2d3a;
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.auth-panel label {
+  display: block;
+  color: #8b8fa8;
+  font-size: 12px;
+  margin: 14px 0 8px;
+  text-transform: uppercase;
+}
+
+.auth-panel input,
+.auth-panel select {
+  width: 100%;
+  background: #1a1d27;
+  border: 1px solid #383d50;
+  border-radius: 8px;
+  color: #ffffff;
+  padding: 12px;
+}
+
+.profile-login {
+  width: 100%;
+  text-align: left;
+  background: #1a1d27;
+  border: 1px solid #2a2d3a;
+  border-radius: 8px;
+  color: #ffffff;
+  padding: 13px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.profile-login:hover {
+  border-color: #4caf50;
+  background: #202536;
+}
+
+.profile-login strong,
+.profile-login span {
+  display: block;
+}
+
+.profile-login span {
+  color: #4caf50;
+  font-size: 12px;
+  margin-top: 3px;
 }
 
 /* SIDEBAR */
@@ -89,6 +185,21 @@ body {
   color: #8b8fa8;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.logout-button {
+  width: 100%;
+  background: transparent;
+  border: 1px solid #383d50;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 9px 10px;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+.logout-button:hover {
+  background: #242838;
 }
 
 nav {
@@ -567,10 +678,6 @@ button:disabled {
 }
 
 @media (max-width: 900px) {
-  body {
-    display: block;
-  }
-
   .sidebar {
     position: static;
     width: 100%;
@@ -592,5 +699,14 @@ button:disabled {
   .page-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .app-shell,
+  .auth-grid {
+    display: block;
+  }
+
+  .auth-panel {
+    margin-bottom: 16px;
   }
 }

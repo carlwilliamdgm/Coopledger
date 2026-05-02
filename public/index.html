@@ -7,25 +7,78 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+  <section id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="logo">
+          <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
+        </div>
+        <h1>Connexion coopérative</h1>
+        <p>Identifiez-vous ou enregistrez-vous pour ouvrir une interface adaptée à votre rôle.</p>
+      </div>
+
+      <div class="auth-grid">
+        <div class="auth-panel">
+          <p class="panel-label">Profils de démonstration</p>
+          <button class="profile-login" onclick="loginDemoProfile('president')">
+            <strong>Kofi AGBEKO</strong>
+            <span>Président</span>
+          </button>
+          <button class="profile-login" onclick="loginDemoProfile('tresoriere')">
+            <strong>Ama TCHAMDJA</strong>
+            <span>Trésorière</span>
+          </button>
+          <button class="profile-login" onclick="loginDemoProfile('secretaire')">
+            <strong>Koffi BOUKPESSI</strong>
+            <span>Secrétaire</span>
+          </button>
+          <button class="profile-login" onclick="loginDemoProfile('membre')">
+            <strong>Abla GNASSINGBE</strong>
+            <span>Membre</span>
+          </button>
+          <button class="profile-login" onclick="loginDemoProfile('observateur')">
+            <strong>Partenaire externe</strong>
+            <span>Observateur</span>
+          </button>
+        </div>
+
+        <form class="auth-panel" onsubmit="enregistrerProfil(event)">
+          <p class="panel-label">Nouvel accès</p>
+          <label for="register-name">Nom complet</label>
+          <input id="register-name" type="text" placeholder="Ex. Komi ADJOKA" required>
+
+          <label for="register-role">Rôle dans la coopérative</label>
+          <select id="register-role" required>
+            <option value="Membre">Membre</option>
+            <option value="Observateur">Observateur</option>
+            <option value="Secretaire">Secrétaire</option>
+            <option value="Tresoriere">Trésorière</option>
+            <option value="President">Président</option>
+          </select>
+
+          <label for="register-cotisations">Cotisations versées</label>
+          <input id="register-cotisations" type="number" min="0" step="1000" value="0">
+
+          <button class="btn-primary" type="submit">Créer le profil et entrer</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <div id="app-shell" class="app-shell hidden">
   <!-- SIDEBAR -->
   <div class="sidebar">
     <div class="logo">
       <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
     </div>
     <div class="login-panel">
-      <label for="profile-select">Connecte en tant que</label>
-      <select id="profile-select" onchange="connecterProfil(this.value)">
-        <option value="president">Kofi AGBEKO - President</option>
-        <option value="tresoriere">Ama TCHAMDJA - Tresoriere</option>
-        <option value="secretaire">Koffi BOUKPESSI - Secretaire</option>
-        <option value="membre">Abla GNASSINGBE - Membre</option>
-        <option value="observateur">Partenaire externe - Observateur</option>
-      </select>
+      <label>Session active</label>
       <div class="profile-card">
         <strong id="profile-name">Kofi AGBEKO</strong>
         <span id="profile-role">President</span>
         <p id="profile-description">Peut proposer une operation soumise au vote et gerer la cooperative.</p>
       </div>
+      <button class="logout-button" onclick="deconnecter()">Changer de profil</button>
     </div>
     <nav>
       <a href="#" class="nav-item active" onclick="showPage('dashboard')">📊 Dashboard</a>
@@ -216,6 +269,7 @@
         </table>
       </div>
     </div>
+  </div>
   </div>
 
   <div id="demo-guide" class="demo-guide hidden">
