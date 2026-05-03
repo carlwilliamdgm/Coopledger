@@ -429,9 +429,11 @@ async function enregistrerTransaction() {
     alert('Cette depense reduira le solde total de la cooperative, sans modifier les cotisations individuelles.');
   }
 
-  const btn = document.querySelector('.btn-primary');
-  btn.textContent = 'Enregistrement sur blockchain...';
-  btn.disabled = true;
+  const btn = document.getElementById('new-transaction-btn');
+  if (btn) {
+    btn.textContent = 'Enregistrement sur blockchain...';
+    btn.disabled = true;
+  }
 
   try {
     const response = await fetch('/api/transaction', {
@@ -458,8 +460,10 @@ async function enregistrerTransaction() {
     alert(error.message || 'Erreur lors de l enregistrement');
     console.error(error);
   } finally {
-    btn.textContent = '+ Nouvelle Transaction';
-    btn.disabled = false;
+    if (btn) {
+      btn.textContent = '+ Nouvelle Transaction';
+      btn.disabled = false;
+    }
   }
 }
 
