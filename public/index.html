@@ -7,6 +7,7 @@
   <title>CoopLedger — Coopérative Agri-Kara de Broukou</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.fedapay.com/checkout.js?v=1.1.7"></script>
 </head>
 
 <body>
@@ -46,7 +47,8 @@
           <input id="register-name" type="text" placeholder="Ex. Komi ADJOKA" required>
 
           <label for="register-username">Identifiant</label>
-          <input id="register-username" type="text" placeholder="komi_adjoka" pattern="[a-zA-Z0-9_]{3,20}" minlength="3" maxlength="20" autocomplete="username" required>
+          <input id="register-username" type="text" placeholder="komi_adjoka" pattern="[a-zA-Z0-9_]{3,20}" minlength="3"
+            maxlength="20" autocomplete="username" required>
 
           <label for="register-email">Email</label>
           <input id="register-email" type="email" placeholder="komi@coop.test" required>

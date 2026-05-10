@@ -323,7 +323,11 @@ function installCotisationsPage() {
     <div id="page-cotisations" class="page">
       <div class="page-header">
         <h1>Cotisations</h1>
-        <button id="fedapay-btn" class="btn-primary" onclick="initierPaiementFedapay()">Payer avec FedaPay</button>
+        <div class="cotisations-header-actions">
+          <label for="fedapay-amount">Montant (FCFA)</label>
+          <input id="fedapay-amount" type="number" min="1" placeholder="5000" />
+          <button id="fedapay-btn" class="btn-primary" type="button" onclick="initierPaiementFedapay()">Payer</button>
+        </div>
       </div>
       <form id="manual-cotisation-form" class="login-panel hidden" onsubmit="enregistrerCotisationManuelle(event)">
         <label for="cotisation-member-id">ID membre</label>
@@ -995,24 +999,46 @@ async function enregistrerCotisationManuelle(event) {
   }
 }
 
-function initierPaiementFedapay() {
-  const amount = Number(prompt('Montant de la cotisation FedaPay (FCFA) :') || 0);
+async function initierPaiementFedapay(event) {
+  if (event?.preventDefault) event.preventDefault();
+  const amount = Number(document.getElementById('fedapay-amount')?.value || 0);
 
   if (!Number.isInteger(amount) || amount <= 0) {
-    alert('Le montant doit etre un entier positif.');
+    alert('Le montant doit être un entier positif.');
     return;
   }
 
-  if (window.FedaPay?.init) {
-    window.FedaPay.init({
-      public_key: window.FEDAPAY_PUBLIC_KEY,
-      transaction: { amount, description: 'Cotisation CoopLedger' },
-      onComplete: () => chargerCotisations(),
+  try {
+    const data = await apiFetch('/api/fedapay/initier', {
+      method: 'POST',
+      body: JSON.stringify({ montant: amount }),
     });
-    return;
-  }
 
-  alert('FedaPay n est pas disponible sur cette page. Le paiement sera actif quand le script FedaPay sera charge.');
+    const widget = window.FedapayCheckout || window.FedaPayCheckout || window.FedaPay || window.fedapay;
+    if (!widget) {
+      throw new Error('Widget FedaPay indisponible.');
+    }
+
+    const openWidget = widget.open || widget.init;
+    if (typeof openWidget !== 'function') {
+      throw new Error('Widget FedaPay invalide.');
+    }
+
+    openWidget.call(widget, {
+      token: data.token,
+      public_key: 'pk_sandbox_4OdnCn5ourE2X53kWoJDlymC',
+      onComplete: () => {
+        alert('Paiement FedaPay terminé. Merci !');
+        chargerCotisations();
+      },
+      onError: (error) => {
+        console.error('FedaPay erreur', error);
+        alert(error?.message || 'Erreur lors du paiement FedaPay.');
+      },
+    });
+  } catch (error) {
+    alert(error.message || 'Impossible de lancer le paiement FedaPay.');
+  }
 }
 
 function startNotificationsStream() {

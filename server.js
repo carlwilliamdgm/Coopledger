@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const { Keypair } = require('@stellar/stellar-sdk');
@@ -22,6 +23,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
 const sseClients = new Set();
 const BUREAU_POSTES = ['president', 'tresorier', 'secretaire', 'verificateur'];
+const FEDAPAY_TRANSACTION_ENDPOINT = 'https://sandbox-api.fedapay.com/v1/transactions';
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -90,8 +92,59 @@ function readBody(req) {
         reject(new HttpError(400, 'JSON invalide.'));
       }
     });
+  });
+}
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1_000_000) {
+        reject(new HttpError(413, 'Payload trop volumineux.'));
+        req.destroy();
+      }
+    });
+
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+function postJson(url, payload, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const parsedUrl = new URL(url);
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.pathname + (parsedUrl.search || ''),
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...headers,
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => {
+        let data = {};
+        try {
+          data = responseBody ? JSON.parse(responseBody) : {};
+        } catch (err) {
+          return reject(new HttpError(502, 'Reponse invalide de FedaPay.'));
+        }
+        resolve({ status: res.statusCode || 0, ok: res.statusCode >= 200 && res.statusCode < 300, data });
+      });
+    });
 
     req.on('error', reject);
+    req.write(body);
+    req.end();
   });
 }
 
@@ -824,6 +877,58 @@ async function createCotisation(req, res) {
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 
+async function initierFedapay(req, res) {
+  await requireAuth(req, res);
+
+  const { montant } = await readBody(req);
+  const amount = parsePositiveInteger(montant, 'montant');
+  const apiKey = process.env.FEDAPAY_SERVER_KEY || 'sk_sandbox_YQWarfYpVd68IEEZ0MHICcn3';
+
+  const response = await postJson(FEDAPAY_TRANSACTION_ENDPOINT, {
+    description: 'Cotisation CoopLedger',
+    amount,
+    currency: { iso: 'XOF' },
+    callback_url: 'https://coopledger-demo.up.railway.app/api/cotisations/webhook',
+    metadata: { member_id: req.user.id },
+  }, {
+    Authorization: `Bearer ${apiKey}`,
+  });
+
+  const data = response.data;
+  if (!response.ok) {
+    throw new HttpError(response.status, data.error || 'Erreur lors de la creation de la transaction FedaPay.');
+  }
+
+  const token = data.token || data.transaction?.token;
+  const url = data.url || data.payment_url || data.redirect_url || data.transaction?.payment_url;
+
+  if (!token || !url) {
+    throw new HttpError(502, 'Reponse incomplette de FedaPay.');
+  }
+
+  sendJson(res, 200, { token, url });
+}
+
+function timingSafeCompare(valueA, valueB) {
+  const bufA = Buffer.from(String(valueA), 'utf8');
+  const bufB = Buffer.from(String(valueB), 'utf8');
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+function verifyFedapaySignature(rawSignature, rawBody) {
+  const secret = process.env.FEDAPAY_SECRET;
+  if (!secret || !rawSignature) {
+    return false;
+  }
+
+  const actualSignature = cleanString(rawSignature).replace(/^sha256=/i, '');
+  const hmac = crypto.createHmac('sha256', secret).update(rawBody);
+  const expectedHex = hmac.digest('hex');
+  const expectedBase64 = Buffer.from(expectedHex, 'hex').toString('base64');
+
+  return timingSafeCompare(actualSignature, expectedHex) || timingSafeCompare(actualSignature, expectedBase64);
+}
+
 async function listCandidatures(req, res) {
   await requireAuth(req, res);
 
@@ -898,7 +1003,14 @@ async function closeCandidaturePeriod(req, res, id) {
 }
 
 async function fedapayWebhook(req, res) {
-  const payload = await readBody(req);
+  const rawBody = await readRawBody(req);
+  const signatureHeader = req.headers['x-fedapay-signature'] || req.headers['x-fedapay-signature-256'] || req.headers['x-fp-signature'] || req.headers['x-fedapay-signaturesha256'];
+
+  if (!verifyFedapaySignature(signatureHeader, rawBody)) {
+    throw new HttpError(401, 'Signature invalide.');
+  }
+
+  const payload = rawBody ? JSON.parse(rawBody) : {};
   const status = cleanString(payload.status || payload.statut || payload.transaction?.status).toLowerCase();
 
   if (!['approved', 'confirmed', 'confirmé', 'confirme', 'paid'].includes(status)) {
@@ -1204,6 +1316,7 @@ async function routeApi(req, res, pathname) {
   }
 
   if (req.method === 'POST' && pathname === '/api/cotisations') return createCotisation(req, res);
+  if (req.method === 'POST' && pathname === '/api/fedapay/initier') return initierFedapay(req, res);
   if (req.method === 'POST' && pathname === '/api/cotisations/webhook') return fedapayWebhook(req, res);
   if (req.method === 'GET' && pathname === '/api/cotisations/me') return myCotisations(req, res);
 
