@@ -6,6 +6,7 @@ let notifications = [];
 let candidatures = [];
 let currentUser = null;
 let financialHealth = null;
+let coopConfig = null;
 let sseAbortController = null;
 let sseReconnectTimer = null;
 
@@ -426,6 +427,7 @@ function deconnecter() {
 
 async function loadProtectedData() {
   await Promise.allSettled([
+    chargerConfig(),
     chargerTransactions(),
     chargerMembres(),
     chargerVotes(),
@@ -434,7 +436,20 @@ async function loadProtectedData() {
     chargerSante(),
   ]);
   renderDashboard();
+  renderVotes();
+  renderVotesInDashboard();
   flushPendingTransactions();
+}
+
+async function chargerConfig() {
+  try {
+    const data = await apiFetch('/api/config');
+    coopConfig = data;
+    document.getElementById('members-title').textContent = `Membres — ${data.nom_coop || 'Coop'}`;
+  } catch (error) {
+    coopConfig = { nom_coop: 'CoopLedger' };
+    document.getElementById('members-title').textContent = 'Membres';
+  }
 }
 
 async function chargerTransactions() {
@@ -462,6 +477,7 @@ async function chargerVotes() {
     const data = await apiFetch('/api/votes');
     votes = data.votes || [];
     renderVotes();
+    renderVotesInDashboard();
   } catch (error) {
     const page = document.getElementById('page-vote');
     if (page) page.insertAdjacentHTML('beforeend', `<p>${escapeHtml(error.message)}</p>`);
@@ -473,6 +489,7 @@ async function chargerCandidatures() {
     const data = await apiFetch('/api/candidatures');
     candidatures = data.candidatures || [];
     renderVotes();
+    renderVotesInDashboard();
   } catch (error) {
     candidatures = [];
   }
@@ -496,6 +513,18 @@ async function chargerSante() {
     financialHealth = null;
     renderHealthScore();
   }
+}
+
+function renderVotesInDashboard() {
+  const container = document.getElementById('votes-container');
+  if (!container) return;
+
+  if (!votes.length) {
+    container.innerHTML = '<p>Aucun vote en cours.</p>';
+    return;
+  }
+
+  container.innerHTML = votes.map(renderVoteCard).join('');
 }
 
 function renderTableError(id, colspan, message) {
@@ -687,14 +716,23 @@ function renderDashboard() {
   const balance = transactions.reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthlyTransactions = transactions.filter(transaction => String(transaction.date || '').slice(0, 7) === currentMonth);
-  const contributions = cotisations.reduce((total, cotisation) => total + Number(cotisation.montant || 0), 0);
+  const monthlyCotisations = cotisations.filter(cotisation => String(cotisation.date || '').slice(0, 7) === currentMonth);
+  const contributions = monthlyCotisations.reduce((total, cotisation) => total + Number(cotisation.montant || 0), 0);
   const expenses = monthlyTransactions
     .filter(transaction => Number(transaction.montant || 0) < 0)
     .reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
+  const openVotes = votes.filter(vote => vote.statut === 'ouvert').length;
+  const closedVotes = votes.filter(vote => vote.statut !== 'ouvert').length;
+  const activeMembers = members.filter(m => m.statut === 'Actif').length;
 
   document.getElementById('coop-balance').textContent = formatAbsoluteMontant(balance);
   document.getElementById('monthly-contributions').textContent = formatAbsoluteMontant(contributions);
-  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(expenses);
+  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(Math.abs(expenses));
+  document.getElementById('active-members-count').textContent = activeMembers;
+  document.getElementById('open-votes-count').textContent = openVotes;
+  document.getElementById('proof-count').textContent = transactions.length;
+  document.getElementById('votes-proof-count').textContent = closedVotes;
+  document.getElementById('proof-last').textContent = transactions.length > 0 ? formatDate(transactions[0].date) : '-';
 
   renderHealthScore();
 }

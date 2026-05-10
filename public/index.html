@@ -109,38 +109,38 @@
         <div class="stats-grid">
           <div class="stat-card">
             <p class="stat-label">Cotisations ce mois</p>
-            <p id="monthly-contributions" class="stat-value">0 FCFA</p>
+            <p id="monthly-contributions" class="stat-value">-</p>
           </div>
           <div class="stat-card">
             <p class="stat-label">Dépenses ce mois</p>
-            <p id="monthly-expenses" class="stat-value">0 FCFA</p>
+            <p id="monthly-expenses" class="stat-value">-</p>
           </div>
           <div class="stat-card">
             <p class="stat-label">Membres actifs</p>
-            <p id="active-members-count" class="stat-value">0</p>
+            <p id="active-members-count" class="stat-value">-</p>
           </div>
           <div class="stat-card">
             <p class="stat-label">Votes en cours</p>
-            <p class="stat-value">2</p>
+            <p id="open-votes-count" class="stat-value">-</p>
           </div>
         </div>
         <div class="transparency-panel">
           <div>
-            <p class="panel-label">Score de transparence</p>
-            <p class="panel-score">92%</p>
+            <p class="panel-label">Score de santé</p>
+            <p id="financial-health-score" class="panel-score">-</p>
           </div>
           <div class="proof-grid">
             <div>
-              <span id="proof-count">5</span>
-              <small>transactions scellées</small>
+              <span id="proof-count">-</span>
+              <small>transactions enregistrées</small>
             </div>
             <div>
-              <span>2</span>
-              <small>votes publiés</small>
+              <span id="votes-proof-count">-</span>
+              <small>votes fermés</small>
             </div>
             <div>
-              <span id="proof-last">01/05/2026</span>
-              <small>dernière preuve</small>
+              <span id="proof-last">-</span>
+              <small>dernière mise à jour</small>
             </div>
           </div>
         </div>
@@ -215,44 +215,17 @@
             <button class="btn-contre">Voter Contre</button>
           </div>
         </div>
-        <div class="vote-card">
-          <h3>Construction d'un hangar de stockage</h3>
-          <p class="vote-budget">Budget estimé : 3 500 000 FCFA</p>
-          <div class="vote-barre">
-            <div class="vote-pour" style="width: 80%">80% Pour</div>
-            <div class="vote-contre" style="width: 20%">20%</div>
-          </div>
-          <p class="vote-info">96 votes pour · 24 votes contre · 0 abstentions</p>
-          <div class="vote-actions">
-            <button class="btn-pour">✓ Voter Pour</button>
-            <button class="btn-contre">✗ Voter Contre</button>
-          </div>
-          <p class="vote-blockchain">🔗 Résultats enregistrés sur Stellar</p>
-        </div>
-        <div class="vote-card">
-          <h3>Acquisition tracteur Massey Ferguson</h3>
-          <p class="vote-budget">Budget estimé : 7 500 000 FCFA</p>
-          <div class="vote-barre">
-            <div class="vote-pour" style="width: 65%">65% Pour</div>
-            <div class="vote-contre" style="width: 35%">35%</div>
-          </div>
-          <p class="vote-info">78 votes pour · 42 votes contre · 0 abstentions</p>
-          <div class="vote-actions">
-            <button class="btn-pour">✓ Voter Pour</button>
-            <button class="btn-contre">✗ Voter Contre</button>
-          </div>
-          <p class="vote-blockchain">🔗 Résultats enregistrés sur Stellar</p>
-        </div>
+        <div id="votes-container"></div>
       </div>
 
       <!-- MEMBRES -->
       <div id="page-membres" class="page">
         <div class="page-header">
-          <h1>Membres — Coopérative Agri-Kara de Broukou</h1>
+          <h1 id="members-title">Membres</h1>
           <button id="add-member-btn" class="btn-primary" onclick="ajouterMembre()">+ Ajouter une personne</button>
         </div>
-        <div class="membres-stats">
-          <p><span id="members-count">5</span> personnes enregistrées · Région de Kara · Filière Maïs & Soja</p>
+        <div id="members-stats" class="membres-stats">
+          <p><span id="members-count">-</span> personnes enregistrées</p>
         </div>
         <div class="table-container">
           <table>
