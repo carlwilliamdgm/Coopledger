@@ -12,6 +12,8 @@ const {
   authenticate,
   authorize,
   generateToken,
+  generateDemoToken,
+  verifyTokenUnsafe,
   isAdminBlocked,
   recordFailedAdminLogin,
   resetAdminFailedAttempts,
@@ -21,7 +23,25 @@ const transactionService = require('./transaction');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
-const sseClients = new Set();
+/** @type {Map<import('http').ServerResponse, { role: string }>} */
+const sseClients = new Map();
+
+const DEMO_SESSION = {
+  data: null,
+};
+
+function notificationMatchesDestinataires(userRole, destinataires) {
+  const raw = cleanString(destinataires) || 'tous';
+  if (raw.toLowerCase() === 'tous') {
+    return true;
+  }
+  if (isAdminRole(userRole)) {
+    return true;
+  }
+  const normalizedUser = normalizeRole(userRole);
+  const targets = raw.split(',').map((segment) => normalizeRole(segment)).filter(Boolean);
+  return targets.includes(normalizedUser);
+}
 const BUREAU_POSTES = ['president', 'tresorier', 'secretaire', 'verificateur'];
 const FEDAPAY_TRANSACTION_ENDPOINT = 'https://sandbox-api.fedapay.com/v1/transactions';
 const ALLOWED_MEMBER_ROLES = ['president', 'tresorier', 'secretaire', 'verificateur', 'membre', 'observateur', 'admin'];
@@ -321,7 +341,7 @@ async function closeCandidaturePeriodByVacancy(vacancyId, automated = true) {
       `UPDATE postes_vacants SET created_at = NOW(), statut = 'candidature' WHERE id = $1`,
       [vacancy.id]
     );
-    await createNotification(`Aucune candidature pour ${vacancy.poste}. Periode relancee 72h.`, 'candidature');
+    await createNotification(`Aucune candidature pour ${vacancy.poste}. Periode relancee 72h.`, 'candidature', 'tous');
     return null;
   }
 
@@ -340,7 +360,7 @@ async function closeCandidaturePeriodByVacancy(vacancyId, automated = true) {
     [`Election ${vacancy.poste}`, expiresAt, vacancy.poste, vacancy.id]
   );
 
-  await createNotification(`Vote d election ouvert pour ${vacancy.poste}.`, 'vote');
+  await createNotification(`Vote d election ouvert pour ${vacancy.poste}.`, 'vote', 'tous');
   return vote.rows[0];
 }
 
@@ -406,10 +426,11 @@ function serveStatic(req, res, pathname) {
   fs.createReadStream(filePath).pipe(res);
 }
 
-async function createNotification(message, type) {
+async function createNotification(message, type, destinataires = 'tous') {
+  const dest = cleanString(destinataires) || 'tous';
   const result = await pool.query(
-    'INSERT INTO notifications (message, type) VALUES ($1, $2) RETURNING *',
-    [message, type]
+    'INSERT INTO notifications (message, type, destinataires) VALUES ($1, $2, $3) RETURNING *',
+    [message, type, dest],
   );
   const notification = result.rows[0];
   pushNotification(notification);
@@ -419,8 +440,14 @@ async function createNotification(message, type) {
 function pushNotification(notification) {
   const payload = `data: ${JSON.stringify(notification)}\n\n`;
 
-  for (const client of sseClients) {
-    client.write(payload);
+  for (const [client, meta] of sseClients) {
+    if (notificationMatchesDestinataires(meta.role, notification.destinataires)) {
+      try {
+        client.write(payload);
+      } catch (err) {
+        sseClients.delete(client);
+      }
+    }
   }
 }
 
@@ -435,7 +462,7 @@ async function register(req, res) {
   const member = await createMemberRecord({ nom, username, email, password, role: requestedRole });
   const token = generateToken(member);
 
-  await createNotification(`Nouveau membre inscrit: ${member.nom}`, 'membre');
+  await createNotification(`Nouveau membre inscrit: ${member.nom}`, 'membre', 'secretaire');
   sendJson(res, 201, { token, member });
 }
 
@@ -446,7 +473,7 @@ async function createMemberByAdmin(req, res) {
   const body = await readBody(req);
   const member = await createMemberRecord(body);
 
-  await createNotification(`Membre cree par l admin: ${member.nom}`, 'membre');
+  await createNotification(`Membre cree par l admin: ${member.nom}`, 'membre', 'secretaire');
   sendJson(res, 201, { member });
 }
 
@@ -558,7 +585,7 @@ async function initConfig(req, res) {
     client.release();
   }
 
-  await createNotification('Configuration initiale terminee.', 'config');
+  await createNotification('Configuration initiale terminee.', 'config', 'tous');
   sendJson(res, 201, {
     config: {
       nom_coop: coopName,
@@ -635,7 +662,7 @@ async function updateMemberRole(req, res, id) {
     throw new HttpError(404, 'Membre introuvable.');
   }
 
-  await createNotification(`Role attribue a ${result.rows[0].nom}: ${cleanRole}`, 'membre');
+  await createNotification(`Role attribue a ${result.rows[0].nom}: ${cleanRole}`, 'membre', 'tous');
   if (isCallerAdmin) {
     await logAdminAction(`Role ${cleanRole} attribue au membre ${id}`, getRequestIp(req));
   }
@@ -676,14 +703,47 @@ async function createTransaction(req, res) {
     [id, cleanLibelle, amount, hash, explorer, member_id || null, voteId]
   );
 
-  await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction');
+  await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tresorier,verificateur');
   sendJson(res, 201, { transaction: result.rows[0] });
 }
 
 async function listVotes(req, res) {
   await requireAuth(req, res);
+  const memberId = Number(req.user.id);
   const result = await pool.query('SELECT * FROM votes ORDER BY created_at DESC');
-  sendJson(res, 200, { votes: result.rows.map(serializeVote) });
+  const votes = [];
+
+  for (const row of result.rows) {
+    const v = serializeVote(row);
+    if (row.type === 'election') {
+      const aVote = await pool.query(
+        `SELECT 1 FROM vote_results WHERE vote_id = $1 AND member_id = $2`,
+        [row.id, memberId],
+      );
+      v.a_vote = aVote.rowCount > 0;
+      if (row.statut !== 'ouvert') {
+        const tally = await pool.query(
+          `SELECT vr.choix, COUNT(*)::int AS voix,
+                  m.nom AS nom_complet
+           FROM vote_results vr
+           LEFT JOIN candidatures c ON c.id = NULLIF(TRIM(vr.choix), '')::integer
+           LEFT JOIN members m ON m.id = c.member_id
+           WHERE vr.vote_id = $1
+           GROUP BY vr.choix, m.nom
+           ORDER BY voix DESC`,
+          [row.id],
+        );
+        v.decompte_voix = tally.rows.map((r) => ({
+          candidature_id: r.choix,
+          nom_complet: r.nom_complet || '—',
+          voix: r.voix,
+        }));
+      }
+    }
+    votes.push(v);
+  }
+
+  sendJson(res, 200, { votes });
 }
 
 async function createVote(req, res) {
@@ -717,7 +777,7 @@ async function createVote(req, res) {
     [cleanTitle, amount, req.user.id, durationHours, expiresAt, voteType]
   );
 
-  await createNotification(`Nouvelle proposition: ${cleanTitle}`, 'vote');
+  await createNotification(`Nouvelle proposition: ${cleanTitle}`, 'vote', 'tous');
   sendJson(res, 201, { vote: serializeVote(result.rows[0]) });
 }
 
@@ -780,7 +840,7 @@ async function castVote(req, res, id) {
     client.release();
   }
 
-  await createNotification('Un vote a ete enregistre.', 'vote');
+  await createNotification('Un vote a ete enregistre.', 'vote', 'tous');
   sendJson(res, 201, { success: true });
 }
 
@@ -827,7 +887,7 @@ async function closeVote(req, res, id) {
            RETURNING *`,
           [new Date(Date.now() + 48 * 60 * 60 * 1000), id]
         );
-        await createNotification(`Egalite sur l election ${vote.poste}. Vote reconduit 48h.`, 'vote');
+        await createNotification(`Egalite sur l election ${vote.poste}. Vote reconduit 48h.`, 'vote', 'tous');
         sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
         return;
       }
@@ -836,7 +896,7 @@ async function closeVote(req, res, id) {
         `UPDATE votes SET statut = 'rejeté' WHERE id = $1 RETURNING *`,
         [id]
       );
-      await createNotification(`Election ${vote.poste} rejetee apres deux egalites.`, 'vote');
+      await createNotification(`Election ${vote.poste} rejetee apres deux egalites.`, 'vote', 'tous');
       sendJson(res, 200, { vote: serializeVote(rejected.rows[0]) });
       return;
     }
@@ -864,7 +924,7 @@ async function closeVote(req, res, id) {
     await pool.query('UPDATE postes_vacants SET statut = $1 WHERE id = $2', ['pourvu', vote.poste_vacant_id]);
     await pool.query('UPDATE votes SET statut = $1 WHERE id = $2', ['validé', id]);
 
-    await createNotification(`${candidature.nom} obtient le poste ${vote.poste}.`, 'membre');
+    await createNotification(`${candidature.nom} obtient le poste ${vote.poste}.`, 'membre', 'tous');
     sendJson(res, 200, { winner: candidature.member_id, poste: vote.poste });
     return;
   }
@@ -893,7 +953,7 @@ async function closeVote(req, res, id) {
     [status, durationHours, expiresAt, id]
   );
 
-  await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote');
+  await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote', 'tous');
   sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
 }
 
@@ -914,7 +974,7 @@ async function cancelVote(req, res, id) {
     ['annulé', id]
   );
 
-  await createNotification('Vote annulé par l administrateur', 'vote');
+  await createNotification('Vote annulé par l administrateur', 'vote', 'tous');
   await logAdminAction(`Vote ${id} annule`, getRequestIp(req));
   sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
 }
@@ -966,7 +1026,7 @@ async function createCotisation(req, res) {
     [memberId, amount, cleanMode]
   );
 
-  await createNotification('Cotisation enregistree.', 'cotisation');
+  await createNotification('Cotisation enregistree.', 'cotisation', 'tresorier');
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 
@@ -1005,7 +1065,8 @@ async function initierFedapay(req, res) {
   const url = data.url || data.payment_url || data.redirect_url || data.transaction?.payment_url;
 
   if (!token) {
-    sendJson(res, 502, { error: 'Token FedaPay absent', raw: data });
+    console.error('FedaPay token absent dans la reponse API:', JSON.stringify(data));
+    sendJson(res, 502, { error: 'Paiement temporairement indisponible' });
     return;
   }
   if (!url) {
@@ -1037,22 +1098,85 @@ function verifyFedapaySignature(rawSignature, rawBody) {
 
 async function listCandidatures(req, res) {
   await requireAuth(req, res);
+  const memberId = Number(req.user.id);
 
-  const vacancies = await pool.query(`
-    SELECT postes_vacants.*,
-      COALESCE(json_agg(
-        json_build_object('id', candidatures.id, 'member_id', candidatures.member_id, 'nom', members.nom, 'username', members.username)
-      ) FILTER (WHERE candidatures.id IS NOT NULL), '[]') AS candidats
-    FROM postes_vacants
-    LEFT JOIN candidatures ON candidatures.poste = postes_vacants.poste
-      AND candidatures.statut IN ('ouvert', 'fermé', 'ferme')
-    LEFT JOIN members ON members.id = candidatures.member_id
-    WHERE postes_vacants.statut IN ('vacant', 'candidature', 'vote')
-    GROUP BY postes_vacants.id
-    ORDER BY postes_vacants.created_at DESC
-  `);
+  const vacancies = await pool.query(
+    `SELECT * FROM postes_vacants
+     WHERE statut IN ('vacant', 'candidature', 'vote', 'annulé', 'pourvu')
+     ORDER BY created_at DESC`,
+  );
 
-  sendJson(res, 200, { candidatures: vacancies.rows });
+  const enriched = [];
+
+  for (const pv of vacancies.rows) {
+    const deadline = new Date(new Date(pv.created_at).getTime() + 72 * 60 * 60 * 1000);
+
+    const candRows = await pool.query(
+      `SELECT c.id, c.member_id, c.statut, m.nom AS nom_complet
+       FROM candidatures c
+       JOIN members m ON m.id = c.member_id
+       WHERE c.poste = $1
+         AND c.statut IN ('ouvert', 'fermé', 'ferme')`,
+      [pv.poste],
+    );
+
+    const estCandidat = candRows.rows.some((c) => Number(c.member_id) === memberId);
+
+    const voteRes = await pool.query(
+      `SELECT * FROM votes WHERE poste_vacant_id = $1 AND type = 'election'
+       ORDER BY id DESC LIMIT 1`,
+      [pv.id],
+    );
+    const electionVote = voteRes.rows[0] || null;
+
+    let decompteVoix = null;
+    let aVote = false;
+    if (electionVote) {
+      const vrCheck = await pool.query(
+        `SELECT 1 FROM vote_results WHERE vote_id = $1 AND member_id = $2`,
+        [electionVote.id, memberId],
+      );
+      aVote = vrCheck.rowCount > 0;
+
+      if (electionVote.statut !== 'ouvert') {
+        const tally = await pool.query(
+          `SELECT vr.choix, COUNT(*)::int AS voix,
+                  m.nom AS nom_complet
+           FROM vote_results vr
+           LEFT JOIN candidatures c ON c.id = NULLIF(TRIM(vr.choix), '')::integer
+           LEFT JOIN members m ON m.id = c.member_id
+           WHERE vr.vote_id = $1
+           GROUP BY vr.choix, m.nom
+           ORDER BY voix DESC`,
+          [electionVote.id],
+        );
+        decompteVoix = tally.rows.map((r) => ({
+          candidature_id: r.choix,
+          nom_complet: r.nom_complet || '—',
+          voix: r.voix,
+        }));
+      }
+    }
+
+    enriched.push({
+      ...pv,
+      date_limite_candidature: deadline.toISOString(),
+      nombre_candidatures: candRows.rows.length,
+      candidats: candRows.rows.map((c) => ({
+        id: c.id,
+        member_id: c.member_id,
+        nom_complet: c.nom_complet,
+        nom: c.nom_complet,
+        statut: c.statut,
+      })),
+      est_candidat: estCandidat,
+      election_vote: electionVote,
+      decompte_voix: decompteVoix,
+      a_vote: aVote,
+    });
+  }
+
+  sendJson(res, 200, { candidatures: enriched });
 }
 
 async function createCandidature(req, res) {
@@ -1098,14 +1222,63 @@ async function createCandidature(req, res) {
     [cleanPoste, req.user.id, expiresAt]
   );
 
-  await createNotification(`Nouvelle candidature pour le poste ${cleanPoste}.`, 'candidature');
+  await createNotification(`Nouvelle candidature pour le poste ${cleanPoste}.`, 'candidature', 'secretaire');
   sendJson(res, 201, { candidature: result.rows[0] });
 }
 
 async function closeCandidaturePeriod(req, res, id) {
   await requireAuth(req, res);
-  await closeCandidaturePeriodByVacancy(Number(id), false);
+  const vacancyId = Number(id);
+  const isCallerAdmin = normalizeRole(req.user?.role) === 'admin';
+
+  const vacancyResult = await pool.query('SELECT * FROM postes_vacants WHERE id = $1', [vacancyId]);
+  const vacancyRow = vacancyResult.rows[0];
+  if (!vacancyRow) {
+    throw new HttpError(404, 'Election introuvable.');
+  }
+
+  if (!isCallerAdmin) {
+    const deadlineMs = new Date(vacancyRow.created_at).getTime() + 72 * 60 * 60 * 1000;
+    if (Date.now() < deadlineMs) {
+      throw new HttpError(403, 'La periode de candidature n est pas encore expiree.');
+    }
+  }
+
+  await closeCandidaturePeriodByVacancy(vacancyId, false);
   sendJson(res, 200, { success: true });
+}
+
+async function annulerCandidatureElection(req, res, id) {
+  await requireAuth(req, res);
+  await requireRoles(req, res, 'admin');
+
+  const vacancyId = Number(id);
+  const vacancyResult = await pool.query('SELECT * FROM postes_vacants WHERE id = $1', [vacancyId]);
+  const vacancyRow = vacancyResult.rows[0];
+  if (!vacancyRow) {
+    throw new HttpError(404, 'Election introuvable.');
+  }
+
+  await pool.query(
+    `UPDATE candidatures SET statut = 'annulé'
+     WHERE poste = $1 AND statut IN ('ouvert', 'fermé', 'ferme')`,
+    [vacancyRow.poste],
+  );
+  await pool.query(
+    `UPDATE votes SET statut = 'annulé'
+     WHERE poste_vacant_id = $1 AND type = 'election' AND statut = 'ouvert'`,
+    [vacancyId],
+  );
+
+  const updatedPv = await pool.query(
+    `UPDATE postes_vacants SET statut = 'annulé' WHERE id = $1 RETURNING *`,
+    [vacancyId],
+  );
+
+  await createNotification('Élection annulée par l\'administrateur', 'vote', 'tous');
+  await logAdminAction(`Election (poste vacant ${vacancyId}) annulee`, getRequestIp(req));
+
+  sendJson(res, 200, { candidature: updatedPv.rows[0] });
 }
 
 async function fedapayWebhook(req, res) {
@@ -1133,7 +1306,7 @@ async function fedapayWebhook(req, res) {
     [memberId, amount, 'FedaPay', 'confirmé']
   );
 
-  await createNotification('Cotisation FedaPay confirmee.', 'cotisation');
+  await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier');
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 
@@ -1158,7 +1331,7 @@ async function createSignalement(req, res, transactionId) {
     throw new HttpError(404, 'Transaction introuvable.');
   }
 
-  await createNotification(cleanMessage, 'signalement');
+  await createNotification(cleanMessage, 'signalement', 'verificateur,tresorier');
   sendJson(res, 201, { success: true });
 }
 
@@ -1171,7 +1344,7 @@ async function notificationStream(req, res) {
     Connection: 'keep-alive',
   });
   res.write(': connected\n\n');
-  sseClients.add(res);
+  sseClients.set(res, { role: req.user?.role || 'membre' });
 
   req.on('close', () => {
     sseClients.delete(res);
@@ -1181,7 +1354,11 @@ async function notificationStream(req, res) {
 async function listNotifications(req, res) {
   await requireAuth(req, res);
   const result = await pool.query('SELECT * FROM notifications ORDER BY created_at DESC');
-  sendJson(res, 200, { notifications: result.rows });
+  const role = req.user?.role;
+  const filtered = result.rows.filter((row) =>
+    notificationMatchesDestinataires(role, row.destinataires),
+  );
+  sendJson(res, 200, { notifications: filtered });
 }
 
 async function getFedapayPublicKey(req, res) {
@@ -1353,13 +1530,13 @@ async function verifierElectionsAutomatiques() {
       const vacancy = await ensureVacancyForPoste(poste);
 
       if (activeMembers < 4) {
-        await createNotification('Minimum 4 membres actifs requis pour ouvrir une élection', 'election');
+        await createNotification('Minimum 4 membres actifs requis pour ouvrir une élection', 'election', 'secretaire');
         continue;
       }
 
       if (vacancy.statut === 'vacant') {
         await pool.query('UPDATE postes_vacants SET statut = $1, created_at = NOW() WHERE id = $2', ['candidature', vacancy.id]);
-        await createNotification(`Periode de candidature ouverte 72h pour ${poste}.`, 'candidature');
+        await createNotification(`Periode de candidature ouverte 72h pour ${poste}.`, 'candidature', 'tous');
       }
     }
   }
@@ -1397,7 +1574,229 @@ function planifierElectionsAutomatiques() {
   }, 60 * 60 * 1000);
 }
 
+function buildDemoDataset() {
+  const now = Date.now();
+  const iso = (t) => new Date(t).toISOString();
+
+  const members = [
+    { id: 1, nom: 'Aminata Diallo', username: 'aminata_d', email: 'a@demo.coop', role: 'president', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+    { id: 2, nom: 'Jean Kouassi', username: 'jean_k', email: 'j@demo.coop', role: 'tresorier', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+    { id: 3, nom: 'Fatou NGuessan', username: 'fatou_n', email: 'f@demo.coop', role: 'secretaire', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+    { id: 4, nom: 'Koffi Mensah', username: 'koffi_m', email: 'k@demo.coop', role: 'verificateur', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+    { id: 5, nom: 'Awa Bamba', username: 'awa_b', email: 'aw@demo.coop', role: 'membre', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+  ];
+
+  const transactions = [
+    { id: 'tx_demo_1', date: iso(now - 86400000), libelle: 'Vente recolte', montant: 450000, hash: 'demo_hash_aaaa', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 1, vote_id: null },
+    { id: 'tx_demo_2', date: iso(now - 172800000), libelle: 'Achat engrais', montant: -120000, hash: 'demo_hash_bbbb', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 2, vote_id: null },
+    { id: 'tx_demo_3', date: iso(now - 3600000), libelle: 'Cotisations mensuelles', montant: 80000, hash: 'demo_hash_cccc', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 3, vote_id: null },
+  ];
+
+  const expires = new Date(now + 72 * 3600000);
+  const electionDecompte = [
+    { candidature_id: '501', nom_complet: 'Jean Kouassi', voix: 3 },
+    { candidature_id: '502', nom_complet: 'Koffi Mensah', voix: 2 },
+  ];
+
+  const votes = [
+    {
+      id: 7001,
+      titre: 'Reparation toiture hangar',
+      budget: 200000,
+      pour: 4,
+      contre: 1,
+      statut: 'ouvert',
+      propose_par: 1,
+      duree_heures: 72,
+      expires_at: expires.toISOString(),
+      type: 'decision',
+      poste: null,
+      poste_vacant_id: null,
+      round: 1,
+      created_at: iso(now - 3600000),
+    },
+    {
+      id: 7002,
+      titre: 'Election tresorier',
+      budget: 0,
+      pour: 0,
+      contre: 0,
+      statut: 'validé',
+      propose_par: null,
+      duree_heures: 72,
+      expires_at: iso(now - 86400000),
+      type: 'election',
+      poste: 'tresorier',
+      poste_vacant_id: 9001,
+      round: 1,
+      created_at: iso(now - 86400000 * 2),
+      a_vote: false,
+      decompte_voix: electionDecompte,
+    },
+  ];
+
+  const electionVote = { ...votes[1] };
+  const candidatureDeadline = new Date(now - 24 * 3600000);
+
+  const posteVacant = {
+    id: 9001,
+    poste: 'tresorier',
+    statut: 'pourvu',
+    created_at: iso(now - 96 * 3600000),
+    date_limite_candidature: candidatureDeadline.toISOString(),
+    nombre_candidatures: 2,
+    candidats: [
+      { id: 501, member_id: 2, nom_complet: 'Jean Kouassi', nom: 'Jean Kouassi', statut: 'fermé' },
+      { id: 502, member_id: 4, nom_complet: 'Koffi Mensah', nom: 'Koffi Mensah', statut: 'fermé' },
+    ],
+    est_candidat: false,
+    election_vote: electionVote,
+    decompte_voix: electionDecompte,
+    a_vote: false,
+  };
+
+  const notifications = [
+    {
+      id: 'd1',
+      message: 'Démonstration : bienvenue dans CoopLedger.',
+      type: 'config',
+      destinataires: 'tous',
+      created_at: iso(now),
+    },
+  ];
+
+  return {
+    members,
+    transactions,
+    votes,
+    candidatures: [posteVacant],
+    notifications,
+    cotisations: [
+      { id: 1, member_id: 5, montant: 5000, mode: 'especes', statut: 'confirmé', date: iso(now - 86400000) },
+    ],
+  };
+}
+
+async function startDemoSession(req, res) {
+  DEMO_SESSION.data = buildDemoDataset();
+  const token = generateDemoToken();
+  sendJson(res, 200, { token });
+}
+
+async function demoNotificationStream(req, res) {
+  await requireAuth(req, res);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write(': demo\n\n');
+  const ping = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch (err) {
+      clearInterval(ping);
+    }
+  }, 25000);
+  req.on('close', () => clearInterval(ping));
+}
+
+async function demoHealthScore(req, res) {
+  await requireAuth(req, res);
+  sendJson(res, 200, {
+    score: 68,
+    details: {
+      ratio_finances: 17,
+      regularite_cotisations: 18,
+      participation_votes: 16,
+      mandats_actifs: 17,
+    },
+  });
+}
+
+async function demoMonthlyReport(req, res) {
+  await requireAuth(req, res);
+  sendJson(res, 200, {
+    mois: new Date().toISOString().slice(0, 7),
+    total_entrees: 530000,
+    total_sorties: -120000,
+    nombre_transactions: 3,
+    total_cotisations: 5000,
+    nombre_cotisations: 1,
+  });
+}
+
+async function routeDemoApi(req, res, pathname) {
+  await requireAuth(req, res);
+  if (res.writableEnded) {
+    return;
+  }
+
+  const store = DEMO_SESSION.data;
+  if (!store) {
+    throw new HttpError(400, 'Session demo non initialisee. Appelez POST /api/demo/start.');
+  }
+
+  if (req.method === 'GET' && pathname === '/api/config') {
+    return sendJson(res, 200, { nom_coop: 'Coopérative de démonstration' });
+  }
+  if (req.method === 'GET' && pathname === '/api/members') {
+    return sendJson(res, 200, { members: store.members });
+  }
+  if (req.method === 'GET' && pathname === '/api/transactions') {
+    return sendJson(res, 200, { transactions: store.transactions });
+  }
+  if (req.method === 'GET' && pathname === '/api/votes') {
+    return sendJson(res, 200, { votes: store.votes.map(serializeVote) });
+  }
+  if (req.method === 'GET' && pathname === '/api/candidatures') {
+    return sendJson(res, 200, { candidatures: store.candidatures });
+  }
+  if (req.method === 'GET' && pathname === '/api/notifications') {
+    return sendJson(res, 200, { notifications: store.notifications });
+  }
+  if (req.method === 'GET' && pathname === '/api/cotisations/me') {
+    return sendJson(res, 200, { cotisations: store.cotisations });
+  }
+  if (req.method === 'GET' && pathname === '/api/notifications/stream') {
+    return demoNotificationStream(req, res);
+  }
+  if (req.method === 'GET' && pathname === '/api/sante') {
+    return demoHealthScore(req, res);
+  }
+  if (req.method === 'GET' && pathname === '/api/rapport/mensuel') {
+    return demoMonthlyReport(req, res);
+  }
+  if (req.method === 'GET' && pathname === '/api/fedapay/public-key') {
+    return sendJson(res, 200, { public_key: 'demo_public_key' });
+  }
+  if (req.method === 'POST' && pathname === '/api/fedapay/initier') {
+    return sendJson(res, 502, { error: 'Paiement temporairement indisponible' });
+  }
+
+  throw new HttpError(404, 'Route API introuvable (mode demo).');
+}
+
 async function routeApi(req, res, pathname) {
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  const bearer = authHeader && authHeader.startsWith('Bearer ')
+    ? authHeader.slice('Bearer '.length)
+    : null;
+  if (bearer) {
+    const decoded = verifyTokenUnsafe(bearer);
+    if (decoded) {
+      req.user = decoded;
+    }
+  }
+
+  if (req.method === 'POST' && pathname === '/api/demo/start') {
+    return startDemoSession(req, res);
+  }
+
+  if (req.user && normalizeRole(req.user.role) === 'demo') {
+    return routeDemoApi(req, res, pathname);
+  }
+
   if (req.method === 'POST' && pathname === '/api/auth/register') return register(req, res);
   if (req.method === 'POST' && pathname === '/api/auth/login') return login(req, res);
 
@@ -1432,6 +1831,11 @@ async function routeApi(req, res, pathname) {
   const candidatureCloseMatch = pathname.match(/^\/api\/candidatures\/(\d+)\/close$/);
   if (req.method === 'POST' && candidatureCloseMatch) {
     return closeCandidaturePeriod(req, res, Number(candidatureCloseMatch[1]));
+  }
+
+  const candidatureAnnulerMatch = pathname.match(/^\/api\/candidatures\/(\d+)\/annuler$/);
+  if (req.method === 'POST' && candidatureAnnulerMatch) {
+    return annulerCandidatureElection(req, res, Number(candidatureAnnulerMatch[1]));
   }
 
   const voteActionMatch = pathname.match(/^\/api\/votes\/(\d+)\/(vote|close|annuler)$/);

@@ -12,6 +12,14 @@ function getJwtSecret() {
   return process.env.JWT_SECRET;
 }
 
+function verifyTokenUnsafe(token) {
+  try {
+    return jwt.verify(token, getJwtSecret());
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRole(role) {
   return String(role || 'membre').toLowerCase();
 }
@@ -33,6 +41,17 @@ function generateToken(member) {
   return jwt.sign(payload, getJwtSecret(), { expiresIn });
 }
 
+function generateDemoToken() {
+  const payload = {
+    id: 0,
+    nom: 'Démonstration',
+    email: 'demo@coopledger.local',
+    role: 'demo',
+    role_expires_at: null,
+  };
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: '30m' });
+}
+
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization || req.headers.Authorization;
   const token = authHeader && authHeader.startsWith('Bearer ')
@@ -45,6 +64,11 @@ async function authenticate(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, getJwtSecret());
+
+    if (normalizeRole(decoded.role) === 'demo') {
+      req.user = decoded;
+      return next();
+    }
 
     if (isRoleExpired(decoded.role_expires_at)) {
       await pool.query(
@@ -108,6 +132,8 @@ function resetAdminFailedAttempts(email) {
 
 module.exports = {
   generateToken,
+  generateDemoToken,
+  verifyTokenUnsafe,
   authenticate,
   authorize,
   logAdminAction,

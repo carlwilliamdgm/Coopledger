@@ -11,6 +11,7 @@ let sseAbortController = null;
 let sseReconnectTimer = null;
 let fedapayPublicKey = null;
 let initialSetupKey = null;
+let demoSessionTimer = null;
 
 const TOKEN_KEY = 'token';
 const PENDING_TRANSACTIONS_KEY = 'pendingTransactions';
@@ -30,6 +31,21 @@ function clearSession() {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
   currentUser = null;
+  if (demoSessionTimer) {
+    clearTimeout(demoSessionTimer);
+    demoSessionTimer = null;
+  }
+  document.getElementById('demo-mode-banner')?.classList.add('hidden');
+}
+
+function isDemoSession() {
+  return Boolean(currentUser && normalizeRole(currentUser.role) === 'demo');
+}
+
+function syncDemoBanner() {
+  const banner = document.getElementById('demo-mode-banner');
+  if (!banner) return;
+  banner.classList.toggle('hidden', !isDemoSession());
 }
 
 function decodeJwt(token) {
@@ -55,6 +71,19 @@ function normalizeRole(role) {
 function getPermissions(role) {
   const normalized = normalizeRole(role);
 
+  if (normalized === 'demo') {
+    return {
+      canSuggest: false,
+      canTransact: false,
+      canVote: false,
+      canManageMembers: false,
+      canVerify: false,
+      canViewReport: true,
+      isAdmin: false,
+      isDemo: true,
+    };
+  }
+
   return {
     canSuggest: normalized === 'president',
     canTransact: normalized === 'tresorier' || normalized === 'tresoriere',
@@ -63,11 +92,14 @@ function getPermissions(role) {
     canVerify: normalized === 'verificateur',
     canViewReport: ['president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
     isAdmin: normalized === 'admin',
+    isDemo: false,
   };
 }
 
 function getProfileDescription(role) {
   const permissions = getPermissions(role);
+
+  if (permissions.isDemo) return 'Session de démonstration : données fictives, sans effet sur la coopérative réelle.';
 
   if (permissions.canSuggest) return 'Peut proposer des operations soumises au vote.';
   if (permissions.canTransact) return 'Peut enregistrer cotisations et transactions scellees.';
@@ -165,11 +197,31 @@ function openSessionFromToken(token) {
     permissions: getPermissions(decoded.role),
   };
 
+  if (demoSessionTimer) {
+    clearTimeout(demoSessionTimer);
+    demoSessionTimer = null;
+  }
+
   document.getElementById('auth-screen').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
   document.getElementById('profile-name').textContent = currentUser.nom;
   document.getElementById('profile-role').textContent = currentUser.role;
   document.getElementById('profile-description').textContent = getProfileDescription(currentUser.role);
+
+  syncDemoBanner();
+
+  if (normalizeRole(decoded.role) === 'demo' && decoded.exp) {
+    const ms = decoded.exp * 1000 - Date.now();
+    if (ms > 0) {
+      demoSessionTimer = setTimeout(() => {
+        alert('La session de démonstration a expiré.');
+        handleAuthExpired();
+      }, ms);
+    } else {
+      handleAuthExpired();
+      return;
+    }
+  }
 
   applyPermissions();
   startAfterLogin();
@@ -777,15 +829,60 @@ function renderVotes() {
 }
 
 function renderCandidatureCard(vacancy) {
+  const titre = escapeHtml(vacancy.poste || '');
+  const dateLimite = vacancy.date_limite_candidature
+    ? formatDateTime(vacancy.date_limite_candidature)
+    : '-';
+  const candidats = vacancy.candidats || [];
+  const nombre = typeof vacancy.nombre_candidatures === 'number'
+    ? vacancy.nombre_candidatures
+    : candidats.length;
+  const estCandidat = Boolean(vacancy.est_candidat);
+  const aVote = Boolean(vacancy.a_vote);
+  const electionVote = vacancy.election_vote;
+  const scrutinCloture = electionVote && electionVote.statut !== 'ouvert';
+  const showDecompte = scrutinCloture && Array.isArray(vacancy.decompte_voix) && vacancy.decompte_voix.length > 0;
+  const isObs = currentUser && normalizeRole(currentUser.role) === 'observateur';
+  const isAdmin = Boolean(currentUser?.permissions?.isAdmin);
+  const statutPv = cleanString(vacancy.statut);
+  const peutSePresenter = !isObs && !estCandidat && statutPv !== 'annulé' && statutPv !== 'pourvu'
+    && ['vacant', 'candidature'].includes(statutPv);
+  const listeCandidats = candidats.length
+    ? `<ul class="candidats-liste">${candidats.map((c) => `<li>${escapeHtml(c.nom_complet || c.nom || c.username || '')}</li>`).join('')}</ul>`
+    : '<p class="vote-info">Aucun candidat inscrit pour le moment.</p>';
+  const adminClose = isAdmin && (statutPv === 'vacant' || statutPv === 'candidature');
+  const adminAnnuler = isAdmin && statutPv !== 'pourvu' && statutPv !== 'annulé';
+
+  const decompteBloc = showDecompte
+    ? `<div class="vote-decompte">
+        <p class="vote-info">Décompte des voix</p>
+        <ul>${vacancy.decompte_voix.map((d) => `<li>${escapeHtml(d.nom_complet)} — ${d.voix} voix</li>`).join('')}</ul>
+      </div>`
+    : '';
+
   return `
-    <div class="vote-card">
-      <h3>Poste ${escapeHtml(vacancy.poste)}</h3>
-      <p class="vote-info">${(vacancy.candidats || []).length} candidature(s) deposee(s)</p>
-      <button class="btn-primary" onclick="mePorterCandidat('${escapeHtml(vacancy.poste)}')" ${currentUser && normalizeRole(currentUser.role) !== 'observateur' ? '' : 'disabled'}>
-        Me porter candidat
-      </button>
+    <div class="vote-card" data-vacancy-id="${vacancy.id}">
+      <h3>${titre}</h3>
+      <p class="vote-info">Date limite de candidature : ${dateLimite}</p>
+      <p class="vote-info">${nombre} candidature(s) · Statut : ${escapeHtml(statutPv || '-')}</p>
+      ${estCandidat ? '<span class="badge-election">Déjà candidat</span>' : ''}
+      ${aVote ? '<span class="badge-election">Déjà voté</span>' : ''}
+      <p class="vote-info">Candidats</p>
+      ${listeCandidats}
+      ${decompteBloc}
+      <div class="vote-actions">
+        <button class="btn-primary" onclick="mePorterCandidat(${JSON.stringify(vacancy.poste)})" ${peutSePresenter ? '' : 'disabled'}>
+          Me porter candidat
+        </button>
+        ${adminClose ? `<button class="btn-secondary" type="button" onclick="cloturerCandidaturePeriode(${vacancy.id})">Clôturer la candidature</button>` : ''}
+        ${adminAnnuler ? `<button class="btn-secondary" type="button" onclick="annulerElectionPoste(${vacancy.id})">Annuler l'élection</button>` : ''}
+      </div>
     </div>
   `;
+}
+
+function cleanString(value) {
+  return String(value ?? '').trim().toLowerCase();
 }
 
 function renderVoteCard(vote) {
@@ -794,20 +891,38 @@ function renderVoteCard(vote) {
   const contrePct = total ? 100 - pourPct : 0;
   const closed = vote.statut !== 'ouvert';
   const isAdmin = Boolean(currentUser?.permissions?.isAdmin);
+  const isElection = vote.type === 'election';
+  const decompte = vote.decompte_voix;
+  const showDecompteElection = isElection && closed && Array.isArray(decompte) && decompte.length > 0;
+
+  const decompteBloc = showDecompteElection
+    ? `<div class="vote-decompte">
+        <p class="vote-info">Décompte des voix</p>
+        <ul>${decompte.map((d) => `<li>${escapeHtml(d.nom_complet)} — ${d.voix} voix</li>`).join('')}</ul>
+      </div>`
+    : '';
 
   return `
     <div class="vote-card" data-vote-id="${vote.id}">
       <h3>${escapeHtml(vote.titre)}</h3>
       <p class="vote-budget">Budget estime : ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA</p>
-      ${closed ? `
+      ${!isElection && closed ? `
         <div class="vote-barre">
           <div class="vote-pour" style="width: ${pourPct}%">${pourPct}% Pour</div>
           <div class="vote-contre" style="width: ${contrePct}%">${contrePct}%</div>
         </div>
         <p class="vote-info">${vote.pour || 0} votes pour · ${vote.contre || 0} votes contre · Statut : ${escapeHtml(vote.statut)}</p>
-      ` : `
+      ` : ''}
+      ${isElection && closed ? `
+        <p class="vote-info">Statut du scrutin : ${escapeHtml(vote.statut)}</p>
+        ${decompteBloc}
+      ` : ''}
+      ${!isElection && !closed ? `
         <p class="vote-info">Ouvert jusqu'au ${formatDateTime(vote.expires_at)}. Resultat masque jusqu'a la cloture.</p>
-      `}
+      ` : ''}
+      ${isElection && !closed ? `
+        <p class="vote-info">Scrutin ouvert jusqu'au ${formatDateTime(vote.expires_at)}.</p>
+      ` : ''}
       ${vote.statut === 'ouvert' ? `
         <div class="vote-actions">
           ${vote.type === 'election'
@@ -826,6 +941,10 @@ function renderVoteCard(vote) {
 }
 
 function renderElectionVoteButtons(vote) {
+  if (vote.a_vote) {
+    return '<p><span class="badge-election">Déjà voté</span> · vous avez participé à ce scrutin.</p>';
+  }
+
   const vacancy = candidatures.find(item => item.id === vote.poste_vacant_id || item.poste === vote.poste);
   const candidates = vacancy?.candidats || [];
 
@@ -835,7 +954,7 @@ function renderElectionVoteButtons(vote) {
 
   return candidates.map(candidate => `
     <button class="btn-pour" onclick="voter(${vote.id}, '${candidate.id}')">
-      ${escapeHtml(candidate.nom || candidate.username)}
+      ${escapeHtml(candidate.nom || candidate.nom_complet || candidate.username)}
     </button>
   `).join('');
 }
@@ -1251,6 +1370,33 @@ async function mePorterCandidat(poste) {
   }
 }
 
+async function cloturerCandidaturePeriode(vacancyId) {
+  if (!currentUser?.permissions?.isAdmin) return;
+  try {
+    await apiFetch(`/api/candidatures/${vacancyId}/close`, { method: 'POST' });
+    await Promise.all([chargerCandidatures(), chargerVotes()]);
+    renderVotes();
+    renderVotesInDashboard();
+    alert('Période de candidature clôturée.');
+  } catch (error) {
+    alert(error.message || 'Action impossible.');
+  }
+}
+
+async function annulerElectionPoste(vacancyId) {
+  if (!currentUser?.permissions?.isAdmin) return;
+  if (!window.confirm('Annuler cette élection ?')) return;
+  try {
+    await apiFetch(`/api/candidatures/${vacancyId}/annuler`, { method: 'POST' });
+    await Promise.all([chargerCandidatures(), chargerVotes()]);
+    renderVotes();
+    renderVotesInDashboard();
+    alert('Élection annulée.');
+  } catch (error) {
+    alert(error.message || 'Action impossible.');
+  }
+}
+
 async function enregistrerCotisationManuelle(event) {
   event.preventDefault();
 
@@ -1297,12 +1443,14 @@ async function initierPaiementFedapay(event) {
 
     const widget = window.FedapayCheckout || window.FedaPayCheckout || window.FedaPay || window.fedapay;
     if (!widget) {
-      throw new Error('Widget FedaPay indisponible.');
+      alert('Paiement temporairement indisponible. Réessayez.');
+      return;
     }
 
     const openWidget = widget.open || widget.init;
     if (typeof openWidget !== 'function') {
-      throw new Error('Widget FedaPay invalide.');
+      alert('Paiement temporairement indisponible. Réessayez.');
+      return;
     }
 
     openWidget.call(widget, {
@@ -1312,20 +1460,19 @@ async function initierPaiementFedapay(event) {
         alert('Paiement FedaPay terminé. Merci !');
         chargerCotisations();
       },
-      onError: (error) => {
-        console.error('FedaPay erreur', error);
-        alert(error?.message || 'Erreur lors du paiement FedaPay.');
+      onError: () => {
+        alert('Paiement temporairement indisponible. Réessayez.');
       },
     });
   } catch (error) {
-    alert(error.message || 'Impossible de lancer le paiement FedaPay.');
+    alert('Paiement temporairement indisponible. Réessayez.');
   }
 }
 
 function startNotificationsStream() {
   stopNotificationsStream();
 
-  if (!getToken()) return;
+  if (!getToken() || isDemoSession()) return;
 
   sseAbortController = new AbortController();
 
@@ -1406,8 +1553,23 @@ function updateNetworkStatus() {
     : `Hors ligne · ${pending} transaction(s) en attente`;
 }
 
-function lancerDemo() {
-  alert('La demo locale a ete remplacee par les donnees reelles de l API.');
+async function lancerDemo() {
+  try {
+    const data = await fetch('/api/demo/start', { method: 'POST' }).then(async (response) => {
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(json.error || 'Démo indisponible.');
+      }
+      return json;
+    });
+    if (!data.token) {
+      throw new Error('Démo indisponible.');
+    }
+    setToken(data.token, false);
+    openSessionFromToken(data.token);
+  } catch (error) {
+    alert(error.message || 'Impossible de lancer la démonstration.');
+  }
 }
 
 function etapeDemoSuivante() {}
@@ -1436,6 +1598,8 @@ window.creerMembreAdmin = creerMembreAdmin;
 window.terminerInitialisation = terminerInitialisation;
 window.attribuerRoleDepuisSetup = attribuerRoleDepuisSetup;
 window.mePorterCandidat = mePorterCandidat;
+window.cloturerCandidaturePeriode = cloturerCandidaturePeriode;
+window.annulerElectionPoste = annulerElectionPoste;
 window.enregistrerCotisationManuelle = enregistrerCotisationManuelle;
 window.initierPaiementFedapay = initierPaiementFedapay;
 window.lancerDemo = lancerDemo;

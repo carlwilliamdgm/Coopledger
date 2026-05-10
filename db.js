@@ -100,6 +100,8 @@ async function initDatabase() {
       created_at TIMESTAMP DEFAULT NOW()
     );
 
+    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS destinataires VARCHAR(200) DEFAULT 'tous';
+
     CREATE TABLE IF NOT EXISTS config (
       id SERIAL PRIMARY KEY,
       cle VARCHAR(100) UNIQUE NOT NULL,

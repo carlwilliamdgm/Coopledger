@@ -41,6 +41,8 @@
           </div>
         </div>
 
+        <button type="button" class="demo-button auth-demo-btn" onclick="lancerDemo()">Lancer la démo</button>
+
         <form class="auth-panel" onsubmit="enregistrerProfil(event)">
           <p class="panel-label">Nouvel accès membre</p>
           <label for="register-name">Nom complet</label>
@@ -88,7 +90,6 @@
         <a href="#" class="nav-item" onclick="showPage('vote')">🗳️ Vote</a>
         <a href="#" class="nav-item" onclick="showPage('membres')">👥 Membres</a>
       </nav>
-      <button class="demo-button" onclick="lancerDemo()">Lancer la demo</button>
       <div class="sidebar-footer">
         <p id="sidebar-coop-name">-</p>
         <p id="sidebar-coop-location"></p>
@@ -98,6 +99,9 @@
 
     <!-- CONTENU PRINCIPAL -->
     <div class="main-content">
+      <div id="demo-mode-banner" class="demo-mode-banner hidden" role="status">
+        MODE DÉMONSTRATION — données fictives
+      </div>
       <!-- DASHBOARD -->
       <div id="page-dashboard" class="page active">
         <h1>Dashboard</h1>
