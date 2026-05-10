@@ -46,6 +46,8 @@ async function initDatabase() {
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS poste VARCHAR(50);
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS poste_vacant_id INTEGER;
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS round INTEGER DEFAULT 1;
+    ALTER TABLE votes ADD COLUMN IF NOT EXISTS cle_config VARCHAR(100);
+    ALTER TABLE votes ADD COLUMN IF NOT EXISTS nouvelle_valeur TEXT;
 
     CREATE TABLE IF NOT EXISTS postes_vacants (
       id SERIAL PRIMARY KEY,
@@ -129,6 +131,20 @@ async function initDatabase() {
       timestamp TIMESTAMP DEFAULT NOW(),
       ip VARCHAR(50)
     );
+
+    CREATE TABLE IF NOT EXISTS actions_votees (
+      id SERIAL PRIMARY KEY,
+      vote_id INTEGER REFERENCES votes(id) UNIQUE,
+      titre VARCHAR(200) NOT NULL,
+      budget INTEGER NOT NULL,
+      statut VARCHAR(20) DEFAULT 'en_attente',
+      confirme_par INTEGER REFERENCES members(id),
+      confirme_at TIMESTAMP,
+      dernier_rappel_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS actions_votees_vote_id_idx ON actions_votees(vote_id);
 
     INSERT INTO config (cle, valeur) VALUES ('duree_inactivite_mois', '3')
     ON CONFLICT (cle) DO NOTHING;

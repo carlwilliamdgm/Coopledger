@@ -4,6 +4,8 @@ let votes = [];
 let cotisations = [];
 let notifications = [];
 let candidatures = [];
+/** @type {Array<Record<string, unknown>>} */
+let actionsVotees = [];
 let currentUser = null;
 let financialHealth = null;
 let coopConfig = null;
@@ -129,6 +131,8 @@ function getPermissions(role) {
       canAssignRoleDropdown: false,
       canResetPassword: false,
       canProlongVotes: false,
+      canProposeConfigVote: false,
+      canEditCoopConfig: false,
       isPresident: false,
       canVerify: false,
       canViewReport: true,
@@ -149,6 +153,8 @@ function getPermissions(role) {
     canAssignRoleDropdown: isAdmin,
     canResetPassword: isAdmin,
     canProlongVotes: isAdmin,
+    canProposeConfigVote: normalized === 'president',
+    canEditCoopConfig: isAdmin,
     isPresident: normalized === 'president',
     canVerify: normalized === 'verificateur',
     canViewReport: ['president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
@@ -327,6 +333,9 @@ function onPageShown(pageId) {
   if (pageId === 'notifications') {
     chargerNotificationsHistorique();
   }
+  if (pageId === 'configuration') {
+    chargerConfigAdmin();
+  }
   if (pageId === 'transactions') {
     document.getElementById('tx-filters')?.classList.toggle('hidden', isDemoSession());
   }
@@ -338,6 +347,8 @@ function installDynamicInterface() {
   installCotisationsPage();
   installNotificationsPage();
   installStartupPages();
+  installConfigurationPage();
+  installVotePageSections();
   installTransactionForm();
   markDashboardNodes();
 }
@@ -432,6 +443,7 @@ function installExtraNavItems() {
   nav.insertAdjacentHTML('beforeend', `
     <a href="#" class="nav-item" data-page="cotisations">💰 Cotisations</a>
     <a href="#" class="nav-item" data-page="notifications">🔔 Notifications</a>
+    <a href="#" class="nav-item hidden" data-page="configuration" id="nav-configuration">⚙️ Configuration</a>
   `);
 
   nav.querySelectorAll('.nav-item').forEach(item => {
@@ -493,6 +505,76 @@ function installStartupPages() {
       <button class="btn-primary" onclick="terminerInitialisation()">Terminer</button>
     </div>
   `);
+}
+
+function installConfigurationPage() {
+  const main = document.querySelector('.main-content');
+  if (!main || document.getElementById('page-configuration')) return;
+
+  main.insertAdjacentHTML('beforeend', `
+    <div id="page-configuration" class="page">
+      <div class="page-header">
+        <h1>Configuration</h1>
+        <p class="vote-info">Modifications réservées à l’administrateur. Chaque champ est enregistré séparément.</p>
+      </div>
+      <div class="login-panel">
+        <label for="cfg-nom-coop">Nom de la coopérative</label>
+        <input id="cfg-nom-coop" type="text" autocomplete="organization">
+        <button type="button" class="btn-primary" onclick="enregistrerConfigCle('nom_coop')">Enregistrer</button>
+      </div>
+      <div class="login-panel">
+        <label for="cfg-duree-mandat">Durée des mandats (mois)</label>
+        <input id="cfg-duree-mandat" type="number" min="1" step="1">
+        <button type="button" class="btn-primary" onclick="enregistrerConfigCle('duree_mandat')">Enregistrer</button>
+      </div>
+      <div class="login-panel">
+        <label for="cfg-inactivite">Durée d’inactivité avant désactivation (mois)</label>
+        <input id="cfg-inactivite" type="number" min="1" step="1">
+        <button type="button" class="btn-primary" onclick="enregistrerConfigCle('duree_inactivite_mois')">Enregistrer</button>
+      </div>
+    </div>
+  `);
+}
+
+function installVotePageSections() {
+  const page = document.getElementById('page-vote');
+  if (!page || document.getElementById('config-vote-panel')) return;
+
+  const proposalBtn = document.getElementById('proposal-btn');
+  if (proposalBtn) {
+    proposalBtn.insertAdjacentHTML('afterend', `
+      <button type="button" id="proposer-config-btn" class="btn-secondary hidden" onclick="basculerPanelConfigVote()">
+        Proposer une modification de configuration
+      </button>
+    `);
+  }
+
+  const container = document.getElementById('votes-container');
+  if (container) {
+    container.insertAdjacentHTML('beforebegin', `
+      <div id="config-vote-panel" class="login-panel hidden">
+        <p class="panel-label">Vote sur la configuration</p>
+        <label for="config-vote-cle">Paramètre</label>
+        <select id="config-vote-cle">
+          <option value="nom_coop">Nom de la coopérative</option>
+          <option value="duree_mandat">Durée des mandats (mois)</option>
+          <option value="duree_inactivite_mois">Durée d’inactivité (mois)</option>
+        </select>
+        <label for="config-vote-valeur">Nouvelle valeur</label>
+        <input id="config-vote-valeur" type="text">
+        <label for="config-vote-duree">Durée du vote (heures, minimum 72)</label>
+        <input id="config-vote-duree" type="number" min="72" step="1" value="72">
+        <button type="button" class="btn-primary" onclick="soumettrePropositionConfig()">Soumettre au vote</button>
+        <button type="button" class="btn-secondary" onclick="basculerPanelConfigVote(true)">Annuler</button>
+      </div>
+    `);
+    container.insertAdjacentHTML('afterend', `
+      <section id="actions-votees-section" class="login-panel">
+        <h2>Actions votées</h2>
+        <div id="actions-votees-list"><p>Chargement…</p></div>
+      </section>
+    `);
+  }
 }
 
 function installCotisationsPage() {
@@ -695,6 +777,136 @@ async function chargerConfig() {
   }
 }
 
+async function chargerConfigAdmin() {
+  if (!currentUser?.permissions?.canEditCoopConfig || isDemoSession()) {
+    return;
+  }
+  try {
+    const data = await apiFetch('/api/config/all');
+    const cfg = data.config || {};
+    const nom = document.getElementById('cfg-nom-coop');
+    const mand = document.getElementById('cfg-duree-mandat');
+    const inact = document.getElementById('cfg-inactivite');
+    if (nom) nom.value = String(cfg.nom_coop ?? '');
+    if (mand) mand.value = String(cfg.duree_mandat ?? '');
+    if (inact) inact.value = String(cfg.duree_inactivite_mois ?? '');
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function enregistrerConfigCle(cle) {
+  if (!currentUser?.permissions?.canEditCoopConfig) return;
+  const inputId = cle === 'nom_coop'
+    ? 'cfg-nom-coop'
+    : cle === 'duree_mandat'
+      ? 'cfg-duree-mandat'
+      : 'cfg-inactivite';
+  const el = document.getElementById(inputId);
+  const valeur = el?.value;
+  try {
+    await apiFetch(`/api/config/${encodeURIComponent(cle)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ valeur }),
+    });
+    alert('Configuration enregistrée.');
+    await chargerConfig();
+  } catch (error) {
+    alert(error.message || 'Erreur lors de l’enregistrement.');
+  }
+}
+
+async function chargerActionsVotees() {
+  try {
+    const data = await apiFetch('/api/actions-votees');
+    actionsVotees = data.actions_votees || [];
+    renderActionsVotees();
+  } catch (_) {
+    actionsVotees = [];
+    renderActionsVotees();
+  }
+}
+
+function renderActionsVotees() {
+  const list = document.getElementById('actions-votees-list');
+  if (!list) return;
+
+  if (!actionsVotees.length) {
+    list.innerHTML = '<p class="vote-info">Aucune action votée enregistrée.</p>';
+    return;
+  }
+
+  list.innerHTML = `
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Vote</th>
+            <th>Budget</th>
+            <th>Statut</th>
+            <th>Preuve</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${actionsVotees.map((row) => {
+            const statut = String(row.statut || '');
+            const enAttente = statut === 'en_attente';
+            const hash = row.transaction_hash;
+            const explorer = row.transaction_explorer;
+            const badge = enAttente
+              ? '<span class="badge-inactif">En attente</span>'
+              : '<span class="badge-actif">Concrétisé</span>';
+            const link = hash && explorer
+              ? `<a href="${escapeHtml(explorer)}" target="_blank" rel="noreferrer" class="hash-link">${escapeHtml(shortHash(hash))}</a>`
+              : '—';
+            return `
+              <tr>
+                <td>${escapeHtml(row.titre)}</td>
+                <td>${Number(row.budget || 0).toLocaleString('fr-FR')} FCFA</td>
+                <td>${badge}</td>
+                <td class="hash">${link}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function basculerPanelConfigVote(forceClose = false) {
+  const panel = document.getElementById('config-vote-panel');
+  if (!panel) return;
+  if (forceClose) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.toggle('hidden');
+}
+
+async function soumettrePropositionConfig() {
+  if (!currentUser?.permissions?.canProposeConfigVote) return;
+  const cle = document.getElementById('config-vote-cle')?.value || '';
+  const nouvelleValeur = document.getElementById('config-vote-valeur')?.value ?? '';
+  const duree = Math.max(72, Number(document.getElementById('config-vote-duree')?.value || 72));
+  try {
+    await apiFetch('/api/votes', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'config',
+        cle_config: cle,
+        nouvelle_valeur: nouvelleValeur,
+        duree_heures: duree,
+      }),
+    });
+    basculerPanelConfigVote(true);
+    document.getElementById('config-vote-valeur') && (document.getElementById('config-vote-valeur').value = '');
+    await chargerVotes();
+  } catch (error) {
+    alert(error.message || 'Impossible de créer le vote.');
+  }
+}
+
 function buildTransactionQueryString() {
   const params = new URLSearchParams();
   const typeEl = document.getElementById('tx-filter-type');
@@ -764,6 +976,7 @@ async function chargerVotes() {
     renderVotes();
     renderVotesInDashboard();
     renderTransactionVoteOptions();
+    await chargerActionsVotees();
   } catch (error) {
     const page = document.getElementById('page-vote');
     if (page) page.insertAdjacentHTML('beforeend', `<p>${escapeHtml(error.message)}</p>`);
@@ -774,7 +987,11 @@ function renderTransactionVoteOptions() {
   const select = document.getElementById('transaction-vote-select');
   if (!select) return;
 
-  const validated = votes.filter(vote => vote.statut === 'validé');
+  const validated = votes.filter((vote) => {
+    if (vote.statut !== 'validé') return false;
+    const t = String(vote.type || 'decision').toLowerCase();
+    return t === 'decision';
+  });
   select.innerHTML = validated.length
     ? validated.map(vote => `
         <option value="${vote.id}">
@@ -961,16 +1178,24 @@ function renderVotes() {
   document.getElementById('proposal-panel')?.classList.add('hidden');
 
   const electionVotes = votes.filter(vote => vote.type === 'election');
-  const decisionVotes = votes.filter(vote => vote.type !== 'election');
+  const configVotes = votes.filter(vote => String(vote.type || '').toLowerCase() === 'config');
+  const decisionVotes = votes.filter((vote) => {
+    const t = String(vote.type || 'decision').toLowerCase();
+    return t === 'decision';
+  });
   const electionBlocks = candidatures.map(renderCandidatureCard).join('') + electionVotes.map(renderVoteCard).join('');
+  const configBlocks = configVotes.map(renderVoteCard).join('');
   const decisionBlocks = decisionVotes.map(renderVoteCard).join('');
+  const anyContent = electionBlocks || decisionBlocks || configBlocks;
 
-  if (!electionBlocks && !decisionBlocks) {
+  if (!anyContent) {
     page.insertAdjacentHTML('beforeend', '<div class="vote-card"><h3>Aucune proposition</h3><p class="vote-info">Les nouvelles propositions apparaitront ici.</p></div>');
   } else {
     page.insertAdjacentHTML('beforeend', `
       <div class="vote-card"><h3>Élections en cours</h3></div>
       ${electionBlocks || '<div class="vote-card"><p class="vote-info">Aucune election ouverte.</p></div>'}
+      <div class="vote-card"><h3>Modifications de configuration (vote)</h3></div>
+      ${configBlocks || '<div class="vote-card"><p class="vote-info">Aucune proposition de configuration.</p></div>'}
       <div class="vote-card"><h3>Propositions de décision</h3></div>
       ${decisionBlocks || '<div class="vote-card"><p class="vote-info">Aucune decision en cours.</p></div>'}
     `);
@@ -1046,6 +1271,7 @@ function renderVoteCard(vote) {
   const closed = vote.statut !== 'ouvert';
   const isAdmin = Boolean(currentUser?.permissions?.isAdmin);
   const isElection = vote.type === 'election';
+  const isConfig = String(vote.type || '').toLowerCase() === 'config';
   const decompte = vote.decompte_voix;
   const showDecompteElection = isElection && closed && Array.isArray(decompte) && decompte.length > 0;
 
@@ -1056,10 +1282,15 @@ function renderVoteCard(vote) {
       </div>`
     : '';
 
+  const budgetLine = isConfig
+    ? `<p class="vote-info">Clé : <strong>${escapeHtml(vote.cle_config || '')}</strong></p>
+       <p class="vote-info">Valeur proposée : <strong>${escapeHtml(vote.nouvelle_valeur || '')}</strong></p>`
+    : `<p class="vote-budget">Budget estime : ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA</p>`;
+
   return `
     <div class="vote-card" data-vote-id="${vote.id}">
       <h3>${escapeHtml(vote.titre)}</h3>
-      <p class="vote-budget">Budget estime : ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA</p>
+      ${budgetLine}
       ${!isElection && closed ? `
         <div class="vote-barre">
           <div class="vote-pour" style="width: ${pourPct}%">${pourPct}% Pour</div>
@@ -1072,7 +1303,7 @@ function renderVoteCard(vote) {
         ${decompteBloc}
       ` : ''}
       ${!isElection && !closed ? `
-        <p class="vote-info">Ouvert jusqu'au ${formatDateTime(vote.expires_at)}. Resultat masque jusqu'a la cloture.</p>
+        <p class="vote-info">Ouvert jusqu'au ${formatDateTime(vote.expires_at)}. ${isConfig ? 'Les membres votent pour ou contre cette modification.' : `Resultat masque jusqu'a la cloture.`}</p>
       ` : ''}
       ${isElection && !closed ? `
         <p class="vote-info">Scrutin ouvert jusqu'au ${formatDateTime(vote.expires_at)}.</p>
@@ -1242,6 +1473,14 @@ function applyPermissions() {
 
   const proposalBtn = document.getElementById('proposal-btn');
   if (proposalBtn) proposalBtn.disabled = !permissions.canSuggest;
+
+  const proposerConfigBtn = document.getElementById('proposer-config-btn');
+  if (proposerConfigBtn) {
+    proposerConfigBtn.classList.toggle('hidden', !permissions.canProposeConfigVote);
+    proposerConfigBtn.disabled = !permissions.canProposeConfigVote;
+  }
+
+  document.getElementById('nav-configuration')?.classList.toggle('hidden', !permissions.canEditCoopConfig);
 
   const addMemberBtn = document.getElementById('add-member-btn');
   if (addMemberBtn) {
@@ -1818,8 +2057,18 @@ function parseSseEvent(eventText) {
 }
 
 function refreshDataAfterNotification(notification) {
-  if (notification.type === 'transaction') chargerTransactions();
-  if (notification.type === 'vote') chargerVotes();
+  if (notification.type === 'transaction') {
+    chargerTransactions();
+    chargerActionsVotees();
+  }
+  if (notification.type === 'vote') {
+    chargerVotes();
+    chargerActionsVotees();
+  }
+  if (notification.type === 'config') {
+    chargerConfig();
+    chargerVotes();
+  }
   if (notification.type === 'membre') chargerMembres();
   if (notification.type === 'cotisation') chargerCotisations();
 }
@@ -1884,6 +2133,9 @@ window.prolongerVoteDepuisCarte = prolongerVoteDepuisCarte;
 window.afficherRecu = afficherRecu;
 window.fermerRecu = fermerRecu;
 window.suggererOperation = suggererOperation;
+window.enregistrerConfigCle = enregistrerConfigCle;
+window.basculerPanelConfigVote = basculerPanelConfigVote;
+window.soumettrePropositionConfig = soumettrePropositionConfig;
 window.voter = voter;
 window.cloturerVote = cloturerVote;
 window.annulerVote = annulerVote;

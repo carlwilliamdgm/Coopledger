@@ -76,6 +76,8 @@ function notificationMatchesDestinataires(userRole, destinataires) {
   return targets.includes(normalizedUser);
 }
 const BUREAU_POSTES = ['president', 'tresorier', 'secretaire', 'verificateur'];
+const CONFIG_KEYS_EDITABLE = ['nom_coop', 'duree_mandat', 'duree_inactivite_mois'];
+const CONFIG_KEYS_SECRET = new Set(['stellar_secret_key', 'cle_unique']);
 const FEDAPAY_TRANSACTION_ENDPOINT = 'https://sandbox-api.fedapay.com/v1/transactions';
 const ALLOWED_MEMBER_ROLES = ['president', 'tresorier', 'secretaire', 'verificateur', 'membre', 'observateur', 'admin'];
 
@@ -308,6 +310,39 @@ function normalizePoste(poste) {
 function hideSensitiveMember(member) {
   const { password_hash: _passwordHash, ...safeMember } = member;
   return safeMember;
+}
+
+function normalizeConfigCle(cle) {
+  return cleanString(cle).toLowerCase();
+}
+
+function parseConfigStorageValue(cle, raw) {
+  const k = normalizeConfigCle(cle);
+  if (!CONFIG_KEYS_EDITABLE.includes(k)) {
+    throw new HttpError(400, 'Cle de configuration non modifiable.');
+  }
+  if (k === 'nom_coop') {
+    const v = cleanString(raw);
+    if (!v) {
+      throw new HttpError(400, 'valeur invalide pour nom_coop.');
+    }
+    if (v.length > 200) {
+      throw new HttpError(400, 'nom_coop trop long.');
+    }
+    return v;
+  }
+  return String(parsePositiveInteger(raw, k));
+}
+
+async function writeConfigValue(cle, rawValue) {
+  const k = normalizeConfigCle(cle);
+  const stored = parseConfigStorageValue(k, rawValue);
+  await pool.query(
+    `INSERT INTO config (cle, valeur) VALUES ($1, $2)
+     ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur`,
+    [k, stored],
+  );
+  return stored;
 }
 
 function serializeVote(vote) {
@@ -760,6 +795,38 @@ async function getPublicConfig(req, res) {
   sendJson(res, 200, { nom_coop: result.rows[0]?.valeur || null });
 }
 
+async function listAllConfigAdmin(req, res) {
+  await requireAuth(req, res);
+  await requireRoles(req, res, 'admin');
+
+  const result = await pool.query('SELECT cle, valeur FROM config ORDER BY cle');
+  const config = {};
+  for (const row of result.rows) {
+    if (!CONFIG_KEYS_SECRET.has(row.cle)) {
+      config[row.cle] = row.valeur;
+    }
+  }
+  sendJson(res, 200, { config });
+}
+
+async function putConfigKey(req, res, cleParam) {
+  await requireAuth(req, res);
+  await requireRoles(req, res, 'admin');
+
+  const cle = normalizeConfigCle(decodeURIComponent(cleParam || ''));
+  const body = await readBody(req);
+  const valeur = body.valeur ?? body.value;
+  const stored = await writeConfigValue(cle, valeur);
+
+  await logAdminAction(`Configuration ${cle} mise a jour`, getRequestIp(req));
+  await createNotification(
+    `Configuration mise à jour par l'administrateur : ${cle}`,
+    'config',
+    'tous',
+  );
+  sendJson(res, 200, { cle, valeur: stored });
+}
+
 async function listMembers(req, res) {
   await requireAuth(req, res);
 
@@ -959,6 +1026,23 @@ async function createTransaction(req, res) {
     [id, cleanLibelle, amount, txType, hash, explorer, member_id || null, voteId]
   );
 
+  const avUpdate = await pool.query(
+    `UPDATE actions_votees
+     SET statut = 'concrétisé', confirme_par = $1, confirme_at = NOW()
+     WHERE vote_id = $2 AND statut = 'en_attente'
+     RETURNING titre`,
+    [Number(req.user.id), voteId],
+  );
+
+  if (avUpdate.rowCount > 0) {
+    const titreAction = cleanString(avUpdate.rows[0]?.titre) || cleanLibelle;
+    await createNotification(
+      `Action concrétisée : ${titreAction} — transaction scellée sur Stellar. Hash : ${hash}`,
+      'transaction',
+      'tous',
+    );
+  }
+
   await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tresorier,verificateur');
   sendJson(res, 201, { transaction: result.rows[0] });
 }
@@ -1005,27 +1089,49 @@ async function listVotes(req, res) {
 async function createVote(req, res) {
   await requireAuth(req, res);
 
-  const { titre, budget, duree_heures, type = 'decision' } = await readBody(req);
-  const voteType = cleanString(type).toLowerCase() || 'decision';
+  const body = await readBody(req);
+  const voteType = cleanString(body.type).toLowerCase() || 'decision';
 
   if (voteType === 'election') {
     const activeMembers = await countActiveMembers();
     if (activeMembers < 4) {
       throw new HttpError(403, 'Minimum 4 membres actifs requis pour ouvrir une election.');
     }
+  } else if (voteType === 'config') {
+    await requireRoles(req, res, 'president', 'président');
   } else {
     await requireRoles(req, res, 'president', 'président');
   }
 
-  const cleanTitle = cleanString(titre);
-  const amount = voteType === 'election' ? Number(budget || 0) : parsePositiveInteger(budget, 'budget');
-  const durationHours = Math.max(Number(duree_heures || 72), 72);
-
-  if (!cleanTitle || !Number.isInteger(durationHours)) {
-    throw new HttpError(400, 'titre et duree_heures valide sont obligatoires.');
+  const durationHours = Math.max(Number(body.duree_heures || 72), 72);
+  if (!Number.isInteger(durationHours)) {
+    throw new HttpError(400, 'duree_heures invalide.');
   }
 
   const expiresAt = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+
+  if (voteType === 'config') {
+    const cleConfig = normalizeConfigCle(body.cle_config || body.cle);
+    const preview = parseConfigStorageValue(cleConfig, body.nouvelle_valeur);
+    const cleanTitle = `Configuration : ${cleConfig} → ${preview}`;
+    const result = await pool.query(
+      `INSERT INTO votes (titre, budget, propose_par, duree_heures, expires_at, type, cle_config, nouvelle_valeur)
+       VALUES ($1, 0, $2, $3, $4, 'config', $5, $6)
+       RETURNING *`,
+      [cleanTitle, req.user.id, durationHours, expiresAt, cleConfig, preview]
+    );
+    await createNotification(`Nouvelle proposition de configuration: ${cleConfig}`, 'vote', 'tous');
+    sendJson(res, 201, { vote: serializeVote(result.rows[0]) });
+    return;
+  }
+
+  const cleanTitle = cleanString(body.titre);
+  const amount = voteType === 'election' ? Number(body.budget || 0) : parsePositiveInteger(body.budget, 'budget');
+
+  if (!cleanTitle) {
+    throw new HttpError(400, 'titre est obligatoire.');
+  }
+
   const result = await pool.query(
     `INSERT INTO votes (titre, budget, propose_par, duree_heures, expires_at, type)
      VALUES ($1, $2, $3, $4, $5, $6)
@@ -1136,8 +1242,8 @@ async function prolongVote(req, res, id) {
   sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
 }
 
-async function closeVote(req, res, id, automatedElectionClose = false) {
-  if (!automatedElectionClose) {
+async function closeVote(req, res, id, automatedClose = false) {
+  if (!automatedClose) {
     await requireAuth(req, res);
   }
 
@@ -1156,7 +1262,7 @@ async function closeVote(req, res, id, automatedElectionClose = false) {
     throw new HttpError(400, 'Ce vote est deja ferme.');
   }
 
-  if (!automatedElectionClose) {
+  if (!automatedClose) {
     if (!isCallerAdmin) {
       if (!isBureauCloser) {
         throw new HttpError(403, 'Acces non autorise pour la cloture manuelle.');
@@ -1256,8 +1362,45 @@ async function closeVote(req, res, id, automatedElectionClose = false) {
     [status, durationHours, expiresAt, id]
   );
 
-  await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote', 'tous');
-  sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
+  const closed = updated.rows[0];
+
+  if (status === 'ouvert') {
+    await createNotification(`Vote "${vote.titre}" prolonge (egalite des voix).`, 'vote', 'tous');
+  } else if (status === 'validé') {
+    const voteType = cleanString(vote.type).toLowerCase() || 'decision';
+    if (voteType === 'config') {
+      const applied = await writeConfigValue(vote.cle_config, vote.nouvelle_valeur);
+      await createNotification(
+        `Configuration mise à jour suite au vote : ${vote.cle_config} → ${applied}`,
+        'config',
+        'tous',
+      );
+    } else if (voteType === 'decision') {
+      const budgetNum = Number(vote.budget || 0);
+      await pool.query(
+        `INSERT INTO actions_votees (vote_id, titre, budget)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (vote_id) DO NOTHING`,
+        [id, vote.titre, budgetNum],
+      );
+      await createNotification(
+        `Vote validé : ${vote.titre} — ${budgetNum} FCFA approuvés. En attente de concrétisation.`,
+        'vote',
+        'tous',
+      );
+      await createNotification(
+        `Action à concrétiser : ${vote.titre} — ${budgetNum} FCFA. Créez la transaction associée.`,
+        'vote',
+        'tresorier',
+      );
+    } else {
+      await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote', 'tous');
+    }
+  } else {
+    await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote', 'tous');
+  }
+
+  sendJson(res, 200, { vote: serializeVote(closed) });
 }
 
 async function cancelVote(req, res, id) {
@@ -1712,6 +1855,56 @@ async function listNotifications(req, res) {
   sendJson(res, 200, { notifications: filtered });
 }
 
+async function listActionsVotees(req, res) {
+  await requireAuth(req, res);
+
+  const result = await pool.query(
+    `SELECT av.id,
+            av.vote_id,
+            av.titre,
+            av.budget,
+            av.statut,
+            av.confirme_par,
+            av.confirme_at,
+            av.created_at,
+            t.hash AS transaction_hash,
+            t.explorer AS transaction_explorer
+     FROM actions_votees av
+     LEFT JOIN LATERAL (
+       SELECT hash, explorer
+       FROM transactions
+       WHERE transactions.vote_id = av.vote_id
+       ORDER BY transactions.date DESC
+       LIMIT 1
+     ) t ON true
+     ORDER BY av.created_at DESC`,
+  );
+  sendJson(res, 200, { actions_votees: result.rows });
+}
+
+async function rappelerActionsVoteesEnAttente() {
+  const res = await pool.query(
+    `SELECT id, titre, created_at
+     FROM actions_votees
+     WHERE statut = 'en_attente'
+       AND created_at <= NOW() - INTERVAL '48 hours'
+       AND (
+         dernier_rappel_at IS NULL
+         OR dernier_rappel_at <= NOW() - INTERVAL '24 hours'
+       )`,
+  );
+
+  for (const row of res.rows) {
+    const hours = Math.floor((Date.now() - new Date(row.created_at).getTime()) / (3600 * 1000));
+    await createNotification(
+      `Rappel : ${row.titre} approuvé depuis ${hours}h, transaction non encore créée.`,
+      'vote',
+      'tresorier',
+    );
+    await pool.query('UPDATE actions_votees SET dernier_rappel_at = NOW() WHERE id = $1', [row.id]);
+  }
+}
+
 async function getFedapayPublicKey(req, res) {
   await requireAuth(req, res);
   const key = cleanString(process.env.FEDAPAY_PUBLIC_KEY);
@@ -1957,15 +2150,31 @@ async function verifierElectionsAutomatiques() {
     const autoReq = { headers: {}, user: { id: 0, role: 'admin' } };
     await closeVote(autoReq, silentCloseRes, vote.id, true);
   }
+
+  const expiredDecisionVotes = await pool.query(
+    `SELECT id FROM votes
+     WHERE statut = 'ouvert'
+       AND type IN ('decision', 'config')
+       AND expires_at IS NOT NULL
+       AND expires_at <= NOW()`
+  );
+
+  for (const vote of expiredDecisionVotes.rows) {
+    silentCloseRes.writableEnded = false;
+    const autoReq = { headers: {}, user: { id: 0, role: 'admin' } };
+    await closeVote(autoReq, silentCloseRes, vote.id, true);
+  }
 }
 
 function planifierElectionsAutomatiques() {
   verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
   verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
+  rappelerActionsVoteesEnAttente().catch(err => console.error('Erreur rappels actions votees:', err));
 
   return setInterval(() => {
     verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
     verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
+    rappelerActionsVoteesEnAttente().catch(err => console.error('Erreur rappels actions votees:', err));
   }, 60 * 60 * 1000);
 }
 
@@ -2179,6 +2388,18 @@ async function routeDemoApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/votes') {
     return sendJson(res, 200, { votes: store.votes.map(serializeVote) });
   }
+  if (req.method === 'GET' && pathname === '/api/actions-votees') {
+    return sendJson(res, 200, { actions_votees: [] });
+  }
+  if (req.method === 'GET' && pathname === '/api/config/all') {
+    return sendJson(res, 200, {
+      config: {
+        nom_coop: 'Coopérative de démonstration',
+        duree_mandat: '12',
+        duree_inactivite_mois: '3',
+      },
+    });
+  }
   if (req.method === 'GET' && pathname === '/api/candidatures') {
     return sendJson(res, 200, { candidatures: store.candidatures });
   }
@@ -2235,6 +2456,12 @@ async function routeApi(req, res, pathname) {
 
   if (req.method === 'POST' && pathname === '/api/config/init') return initConfig(req, res);
   if (req.method === 'GET' && pathname === '/api/config') return getPublicConfig(req, res);
+  if (req.method === 'GET' && pathname === '/api/config/all') return listAllConfigAdmin(req, res);
+
+  const configKeyPutMatch = req.method === 'PUT' && pathname.match(/^\/api\/config\/([^/]+)$/);
+  if (configKeyPutMatch && configKeyPutMatch[1] !== 'init') {
+    return putConfigKey(req, res, configKeyPutMatch[1]);
+  }
 
   if (req.method === 'GET' && pathname === '/api/members') return listMembers(req, res);
   if (req.method === 'POST' && pathname === '/api/members/create') return createMemberByAdmin(req, res);
@@ -2299,6 +2526,7 @@ async function routeApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/notifications/stream') return notificationStream(req, res);
   if (req.method === 'GET' && pathname === '/api/notifications') return listNotifications(req, res);
+  if (req.method === 'GET' && pathname === '/api/actions-votees') return listActionsVotees(req, res);
   if (req.method === 'GET' && pathname === '/api/rapport/mensuel') return monthlyReport(req, res);
   if (req.method === 'GET' && pathname === '/api/sante') return healthScore(req, res);
 
