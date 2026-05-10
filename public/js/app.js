@@ -1,481 +1,698 @@
 let transactions = [];
 let members = [];
-let demoIndex = 0;
-let currentProfile = null;
+let votes = [];
+let cotisations = [];
+let notifications = [];
+let currentUser = null;
+let financialHealth = null;
+let sseAbortController = null;
+let sseReconnectTimer = null;
 
-const profiles = {
-  president: {
-    name: 'Kofi AGBEKO',
-    role: 'President',
-    description: 'Peut proposer une operation soumise au vote et gerer la cooperative.',
-    canSuggest: true,
-    canTransact: false,
-    canVote: false,
-    canManageMembers: true
-  },
-  tresoriere: {
-    name: 'Ama TCHAMDJA',
-    role: 'Tresoriere',
-    description: 'Peut ajouter une transaction financiere scellee et gerer les membres.',
-    canSuggest: false,
-    canTransact: true,
-    canVote: false,
-    canManageMembers: true
-  },
-  secretaire: {
-    name: 'Koffi BOUKPESSI',
-    role: 'Secretaire',
-    description: 'Peut gerer les personnes de la cooperative et consulter les preuves.',
-    canSuggest: false,
-    canTransact: false,
-    canVote: false,
-    canManageMembers: true
-  },
-  membre: {
-    name: 'Abla GNASSINGBE',
-    role: 'Membre',
-    description: 'Peut consulter les preuves et voter les operations.',
-    canSuggest: false,
-    canTransact: false,
-    canVote: true,
-    canManageMembers: false
-  },
-  observateur: {
-    name: 'Partenaire externe',
-    role: 'Observateur',
-    description: 'Peut seulement consulter et verifier les preuves.',
-    canSuggest: false,
-    canTransact: false,
-    canVote: false,
-    canManageMembers: false
+const TOKEN_KEY = 'token';
+const PENDING_TRANSACTIONS_KEY = 'pendingTransactions';
+
+function getToken() {
+  return sessionStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token) {
+  sessionStorage.setItem(TOKEN_KEY, token);
+}
+
+function clearSession() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  currentUser = null;
+}
+
+function decodeJwt(token) {
+  try {
+    const payload = token.split('.')[1];
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      atob(normalized)
+        .split('')
+        .map(char => `%${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join('')
+    );
+    return JSON.parse(json);
+  } catch (error) {
+    return null;
   }
-};
+}
+
+function normalizeRole(role) {
+  return String(role || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
 
 function getPermissions(role) {
-  const normalized = String(role || '').toLowerCase();
+  const normalized = normalizeRole(role);
 
   return {
     canSuggest: normalized === 'president',
-    canTransact: normalized === 'tresoriere',
+    canTransact: normalized === 'tresorier' || normalized === 'tresoriere',
     canVote: normalized === 'membre',
-    canManageMembers: ['president', 'tresoriere', 'secretaire'].includes(normalized)
+    canManageMembers: ['admin', 'secretaire'].includes(normalized),
+    canVerify: normalized === 'verificateur',
+    canViewReport: ['president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
   };
 }
 
 function getProfileDescription(role) {
   const permissions = getPermissions(role);
 
-  if (permissions.canSuggest) {
-    return 'Peut proposer une operation soumise au vote et gerer la cooperative.';
-  }
-
-  if (permissions.canTransact) {
-    return 'Peut ajouter une transaction financiere scellee et gerer les membres.';
-  }
-
-  if (permissions.canManageMembers) {
-    return 'Peut gerer les personnes de la cooperative et consulter les preuves.';
-  }
-
-  if (permissions.canVote) {
-    return 'Peut consulter les preuves et voter les operations.';
-  }
-
-  return 'Peut seulement consulter et verifier les preuves.';
+  if (permissions.canSuggest) return 'Peut proposer des operations soumises au vote.';
+  if (permissions.canTransact) return 'Peut enregistrer cotisations et transactions scellees.';
+  if (permissions.canManageMembers) return 'Peut administrer les membres et les roles.';
+  if (permissions.canVerify) return 'Peut signaler une transaction suspecte.';
+  if (permissions.canVote) return 'Peut voter et consulter ses cotisations.';
+  return 'Peut consulter les informations autorisees.';
 }
 
-const demoSteps = [
-  {
-    page: 'dashboard',
-    profile: 'observateur',
-    title: 'Tableau de bord',
-    text: 'On commence avec une vue claire de la cooperative : solde, activite du mois, votes et score de transparence.'
-  },
-  {
-    page: 'transactions',
-    profile: 'observateur',
-    title: 'Historique scelle',
-    text: 'Chaque ligne importante peut etre reliee a une preuve blockchain. Le hash sert de trace publique.'
-  },
-  {
-    page: 'transactions',
-    profile: 'tresoriere',
-    title: 'Nouvelle transaction',
-    text: 'En role Tresoriere, le bouton d ajout est disponible pour sceller une transaction.'
-  },
-  {
-    page: 'vote',
-    profile: 'president',
-    title: 'Proposition du president',
-    text: 'En role President, une operation peut etre suggeree et transmise aux membres pour vote.'
-  },
-  {
-    page: 'vote',
-    profile: 'membre',
-    title: 'Vote des membres',
-    text: 'En role Membre, les boutons de vote sont actifs. En Observateur, la consultation reste seule autorisee.'
-  },
-  {
-    page: 'membres',
-    profile: 'secretaire',
-    title: 'Gestion des personnes',
-    text: 'Les responsables et collaborateurs peuvent ajouter une personne a la cooperative.'
-  }
-];
-
 function formatDate(dateValue) {
+  if (!dateValue) return '-';
   return new Date(dateValue).toLocaleDateString('fr-FR');
 }
 
+function formatDateTime(dateValue) {
+  if (!dateValue) return '-';
+  return new Date(dateValue).toLocaleString('fr-FR');
+}
+
 function formatMontant(montant) {
-  const prefix = montant > 0 ? '+' : '';
-  return `${prefix}${montant.toLocaleString('fr-FR')} FCFA`;
+  const value = Number(montant || 0);
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${value.toLocaleString('fr-FR')} FCFA`;
 }
 
 function formatAbsoluteMontant(montant) {
-  return `${Math.abs(montant).toLocaleString('fr-FR')} FCFA`;
+  return `${Math.abs(Number(montant || 0)).toLocaleString('fr-FR')} FCFA`;
 }
 
-function isCotisation(libelle) {
-  return String(libelle || '').toLowerCase().includes('cotisation');
+function lireMontant(value) {
+  const normalized = String(value ?? '').replace(/\s/g, '').replace(',', '.');
+  const montant = Number(normalized);
+  return Number.isInteger(montant) && montant !== 0 ? montant : null;
 }
 
 function shortHash(hash) {
-  return `${hash.substring(0, 16)}...`;
+  return hash ? `${hash.substring(0, 16)}...` : '-';
 }
 
-// Navigation entre pages
-function showPage(pageId, navTarget) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
-  document.getElementById('page-' + pageId).classList.add('active');
+async function apiFetch(url, options = {}) {
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.headers || {}),
+  };
+  const token = getToken();
 
-  const activeNav = navTarget || document.querySelector(`.nav-item[onclick*="${pageId}"]`);
-  if (activeNav) {
-    activeNav.classList.add('active');
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
+
+  const response = await fetch(url, { ...options, headers });
+  const isJson = response.headers.get('content-type')?.includes('application/json');
+  const data = isJson ? await response.json() : null;
+
+  if (response.status === 401) {
+    handleAuthExpired();
+    throw new Error(data?.error || 'Session expiree.');
+  }
+
+  if (!response.ok) {
+    throw new Error(data?.error || `Erreur HTTP ${response.status}`);
+  }
+
+  return data;
 }
 
-function renderTransactions() {
-  const tbody = document.getElementById('transactions-list');
+function handleAuthExpired() {
+  clearSession();
+  stopNotificationsStream();
+  document.getElementById('app-shell')?.classList.add('hidden');
+  document.getElementById('auth-screen')?.classList.remove('hidden');
+  renderAuthForms();
+}
 
-  if (!transactions.length) {
-    tbody.innerHTML = '<tr><td colspan="5">Aucune transaction enregistree.</td></tr>';
+function openSessionFromToken(token) {
+  const decoded = decodeJwt(token);
+
+  if (!decoded || (decoded.exp && decoded.exp * 1000 <= Date.now())) {
+    handleAuthExpired();
     return;
   }
 
-  tbody.innerHTML = transactions.map(transaction => {
-    const isPositif = transaction.montant > 0;
-    return `
-      <tr>
-        <td>${formatDate(transaction.date)}</td>
-        <td>
-          ${transaction.libelle}
-          ${transaction.memberName ? `<small class="linked-member">Membre : ${transaction.memberName}</small>` : ''}
-        </td>
-        <td class="${isPositif ? 'montant-positif' : 'montant-negatif'}">
-          ${formatMontant(transaction.montant)}
-        </td>
-        <td class="hash">
-          <button class="hash-button" onclick="afficherRecu('${transaction.id}')">${shortHash(transaction.hash)}</button>
-        </td>
-        <td><span class="badge-scelle">Scelle</span></td>
-      </tr>
-    `;
-  }).join('');
-
-  document.getElementById('proof-count').textContent = transactions.length;
-  document.getElementById('proof-last').textContent = formatDate(transactions[0].date);
-  renderDashboard();
-}
-
-function renderMembers() {
-  const tbody = document.getElementById('members-list');
-
-  if (!members.length) {
-    tbody.innerHTML = '<tr><td colspan="5">Aucun membre enregistre.</td></tr>';
-    document.getElementById('members-count').textContent = '0';
-    document.getElementById('sidebar-members-count').textContent = '0 personne';
-    return;
-  }
-
-  tbody.innerHTML = members.map(member => `
-    <tr>
-      <td>${member.id}</td>
-      <td>${member.nom}</td>
-      <td>${member.role}</td>
-      <td>${member.cotisations.toLocaleString('fr-FR')} FCFA</td>
-      <td><span class="${member.statut === 'Actif' ? 'badge-actif' : 'badge-inactif'}">${member.statut}</span></td>
-      <td>
-        <div class="member-actions">
-        <button class="status-button" onclick="changerStatutMembre('${member.id}')" ${currentProfile?.canManageMembers ? '' : 'disabled'}>
-          ${member.statut === 'Actif' ? 'Suspendre' : 'Activer'}
-        </button>
-        <button class="delete-button" onclick="supprimerMembre('${member.id}')" ${currentProfile?.canManageMembers ? '' : 'disabled'}>
-          Supprimer
-        </button>
-        </div>
-      </td>
-    </tr>
-  `).join('');
-
-  document.getElementById('members-count').textContent = members.length;
-  document.getElementById('sidebar-members-count').textContent = `${members.length} personnes`;
-  document.getElementById('active-members-count').textContent = members.filter(member => member.statut === 'Actif').length;
-  renderExistingProfiles();
-}
-
-function renderDashboard() {
-  const balance = transactions.reduce((total, transaction) => total + transaction.montant, 0);
-  const contributions = transactions
-    .filter(transaction => transaction.montant > 0 && isCotisation(transaction.libelle))
-    .reduce((total, transaction) => total + transaction.montant, 0);
-  const expenses = transactions
-    .filter(transaction => transaction.montant < 0)
-    .reduce((total, transaction) => total + transaction.montant, 0);
-
-  document.getElementById('coop-balance').textContent = formatAbsoluteMontant(balance);
-  document.getElementById('monthly-contributions').textContent = formatAbsoluteMontant(contributions);
-  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(expenses);
-}
-
-function renderExistingProfiles() {
-  const container = document.getElementById('existing-profiles');
-  if (!container) return;
-
-  const memberButtons = members.map(member => `
-    <button class="profile-login" onclick="loginExistingMember('${member.id}')">
-      <strong>${member.nom}</strong>
-      <span>${member.role} · ${member.cotisations.toLocaleString('fr-FR')} FCFA cotisés</span>
-    </button>
-  `).join('');
-
-  container.innerHTML = `
-    ${memberButtons}
-    <button class="profile-login" onclick="loginDemoProfile('observateur')">
-      <strong>Partenaire externe</strong>
-      <span>Observateur</span>
-    </button>
-  `;
-}
-
-function openSession(profile) {
-  const permissions = getPermissions(profile.role);
-  currentProfile = {
-    ...profile,
-    description: profile.description || getProfileDescription(profile.role),
-    ...permissions
+  currentUser = {
+    ...decoded,
+    name: decoded.nom,
+    permissions: getPermissions(decoded.role),
   };
 
   document.getElementById('auth-screen').classList.add('hidden');
   document.getElementById('app-shell').classList.remove('hidden');
-  document.getElementById('profile-name').textContent = currentProfile.name;
-  document.getElementById('profile-role').textContent = currentProfile.role;
-  document.getElementById('profile-description').textContent = currentProfile.description;
+  document.getElementById('profile-name').textContent = currentUser.nom;
+  document.getElementById('profile-role').textContent = currentUser.role;
+  document.getElementById('profile-description').textContent = getProfileDescription(currentUser.role);
+
   applyPermissions();
+  loadProtectedData();
+  startNotificationsStream();
 }
 
-function applyPermissions() {
-  if (!currentProfile) return;
+function showPage(pageId, navTarget) {
+  document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
 
-  document.getElementById('new-transaction-btn').disabled = !currentProfile.canTransact;
-  document.getElementById('proposal-btn').disabled = !currentProfile.canSuggest;
-  document.getElementById('add-member-btn').disabled = !currentProfile.canManageMembers;
+  const page = document.getElementById(`page-${pageId}`);
+  if (page) page.classList.add('active');
 
-  document.querySelectorAll('.btn-pour, .btn-contre').forEach(button => {
-    button.disabled = !currentProfile.canVote;
+  const activeNav = navTarget || document.querySelector(`.nav-item[data-page="${pageId}"]`) || document.querySelector(`.nav-item[onclick*="${pageId}"]`);
+  if (activeNav) activeNav.classList.add('active');
+}
+
+function installDynamicInterface() {
+  renderAuthForms();
+  installExtraNavItems();
+  installCotisationsPage();
+  installNotificationsPage();
+  markDashboardNodes();
+}
+
+function renderAuthForms() {
+  const container = document.getElementById('existing-profiles');
+  const registerForm = document.querySelector('#auth-screen form');
+
+  if (container) {
+    container.innerHTML = `
+      <form id="login-form" class="login-form">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" placeholder="membre@coop.test" required>
+        <label for="login-password">Mot de passe</label>
+        <input id="login-password" type="password" required>
+        <button class="btn-primary" type="submit">Se connecter</button>
+      </form>
+    `;
+    document.getElementById('login-form').addEventListener('submit', loginUser);
+  }
+
+  if (registerForm) {
+    registerForm.innerHTML = `
+      <p class="panel-label">Nouvel acces membre</p>
+      <label for="register-name">Nom complet</label>
+      <input id="register-name" type="text" placeholder="Ex. Komi ADJOKA" required>
+      <label for="register-email">Email</label>
+      <input id="register-email" type="email" placeholder="komi@coop.test" required>
+      <label for="register-password">Mot de passe</label>
+      <input id="register-password" type="password" minlength="6" required>
+      <button class="btn-primary" type="submit">Creer le compte et entrer</button>
+    `;
+    registerForm.onsubmit = enregistrerProfil;
+  }
+}
+
+function installExtraNavItems() {
+  const nav = document.querySelector('.sidebar nav');
+  if (!nav || nav.querySelector('[data-page="cotisations"]')) return;
+
+  nav.insertAdjacentHTML('beforeend', `
+    <a href="#" class="nav-item" data-page="cotisations">Cotisations</a>
+    <a href="#" class="nav-item" data-page="notifications">Notifications</a>
+  `);
+
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', event => {
+      event.preventDefault();
+      const page = item.dataset.page || item.getAttribute('onclick')?.match(/showPage\('(.+)'\)/)?.[1];
+      if (page) showPage(page, item);
+    });
   });
-  renderMembers();
 }
 
-function loginDemoProfile(profileId) {
-  openSession(profiles[profileId]);
+function installCotisationsPage() {
+  const main = document.querySelector('.main-content');
+  if (!main || document.getElementById('page-cotisations')) return;
+
+  main.insertAdjacentHTML('beforeend', `
+    <div id="page-cotisations" class="page">
+      <div class="page-header">
+        <h1>Cotisations</h1>
+        <button id="fedapay-btn" class="btn-primary" onclick="initierPaiementFedapay()">Payer avec FedaPay</button>
+      </div>
+      <form id="manual-cotisation-form" class="login-panel hidden" onsubmit="enregistrerCotisationManuelle(event)">
+        <label for="cotisation-member-id">ID membre</label>
+        <input id="cotisation-member-id" type="number" min="1" required>
+        <label for="cotisation-montant">Montant</label>
+        <input id="cotisation-montant" type="number" min="1" required>
+        <label for="cotisation-mode">Mode</label>
+        <input id="cotisation-mode" type="text" value="manuel" required>
+        <button class="btn-primary" type="submit">Enregistrer</button>
+      </form>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Montant</th><th>Mode</th><th>Statut</th></tr>
+          </thead>
+          <tbody id="cotisations-list">
+            <tr><td colspan="4">Chargement...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `);
 }
 
-function loginExistingMember(memberId) {
-  const member = members.find(item => item.id === memberId);
-  if (!member) return;
+function installNotificationsPage() {
+  const main = document.querySelector('.main-content');
+  if (!main || document.getElementById('page-notifications')) return;
 
-  openSession({
-    id: member.id,
-    name: member.nom,
-    role: member.role,
-    cotisations: member.cotisations,
-    description: getProfileDescription(member.role)
-  });
+  main.insertAdjacentHTML('beforeend', `
+    <div id="page-notifications" class="page">
+      <h1>Notifications</h1>
+      <div id="network-status" class="membres-stats"></div>
+      <div id="notifications-list" class="table-container">
+        <p>Aucune notification pour le moment.</p>
+      </div>
+    </div>
+  `);
 }
 
-function deconnecter() {
-  currentProfile = null;
-  arreterDemo();
-  document.getElementById('app-shell').classList.add('hidden');
-  document.getElementById('auth-screen').classList.remove('hidden');
+function markDashboardNodes() {
+  const statValues = document.querySelectorAll('#page-dashboard .stats-grid .stat-card .stat-value');
+  if (statValues[3]) statValues[3].id = 'open-votes-count';
+  const proofSpans = document.querySelectorAll('.proof-grid span');
+  if (proofSpans[1]) proofSpans[1].id = 'votes-proof-count';
+  const score = document.querySelector('.panel-score');
+  if (score) score.id = 'financial-health-score';
+}
+
+async function loginUser(event) {
+  event.preventDefault();
+
+  try {
+    const data = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: document.getElementById('login-email').value.trim(),
+        password: document.getElementById('login-password').value,
+      }),
+    });
+    setToken(data.token);
+    openSessionFromToken(data.token);
+  } catch (error) {
+    alert(error.message || 'Connexion impossible.');
+  }
 }
 
 async function enregistrerProfil(event) {
   event.preventDefault();
 
-  const name = document.getElementById('register-name').value.trim();
-  const role = document.getElementById('register-role').value;
-  const cotisations = Number(document.getElementById('register-cotisations').value || 0);
-
-  if (!name) {
-    alert('Le nom est obligatoire.');
-    return;
+  try {
+    const data = await apiFetch('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        nom: document.getElementById('register-name').value.trim(),
+        email: document.getElementById('register-email').value.trim(),
+        password: document.getElementById('register-password').value,
+      }),
+    });
+    setToken(data.token);
+    event.target.reset();
+    openSessionFromToken(data.token);
+  } catch (error) {
+    alert(error.message || 'Inscription impossible.');
   }
+}
 
-  if (!Number.isInteger(cotisations) || cotisations < 0) {
-    alert('Les cotisations doivent etre un entier positif ou nul.');
-    return;
-  }
+function deconnecter() {
+  clearSession();
+  stopNotificationsStream();
+  document.getElementById('app-shell').classList.add('hidden');
+  document.getElementById('auth-screen').classList.remove('hidden');
+}
 
-  if (role !== 'Observateur') {
-    try {
-      const response = await fetch('/api/members', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nom: name, role, cotisations, statut: 'Actif' })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Enregistrement refuse.');
-      }
-
-      members.push(data.member);
-      renderMembers();
-    } catch (error) {
-      alert(error.message || 'Erreur lors de l enregistrement.');
-      console.error(error);
-      return;
-    }
-  }
-
-  openSession({
-    name,
-    role,
-    description: getProfileDescription(role)
-  });
-
-  event.target.reset();
-  document.getElementById('register-cotisations').value = '0';
+async function loadProtectedData() {
+  await Promise.allSettled([
+    chargerTransactions(),
+    chargerMembres(),
+    chargerVotes(),
+    chargerCotisations(),
+    chargerSante(),
+  ]);
+  renderDashboard();
+  flushPendingTransactions();
 }
 
 async function chargerTransactions() {
   try {
-    const response = await fetch('/api/transactions');
-    const data = await response.json();
+    const data = await apiFetch('/api/transactions');
     transactions = data.transactions || [];
     renderTransactions();
   } catch (error) {
-    document.getElementById('transactions-list').innerHTML = '<tr><td colspan="5">Impossible de charger les transactions.</td></tr>';
-    console.error(error);
+    renderTableError('transactions-list', 5, error.message);
   }
 }
 
 async function chargerMembres() {
   try {
-    const response = await fetch('/api/members');
-    const data = await response.json();
+    const data = await apiFetch('/api/members');
     members = data.members || [];
     renderMembers();
   } catch (error) {
-    document.getElementById('members-list').innerHTML = '<tr><td colspan="5">Impossible de charger les membres.</td></tr>';
-    console.error(error);
+    renderTableError('members-list', 6, error.message);
   }
 }
 
-// Enregistrer une transaction sur Stellar
-function lireMontant(value) {
-  const normalized = String(value ?? '').replace(/\s/g, '').replace(',', '.');
-  const montant = Number(normalized);
+async function chargerVotes() {
+  try {
+    const data = await apiFetch('/api/votes');
+    votes = data.votes || [];
+    renderVotes();
+  } catch (error) {
+    const page = document.getElementById('page-vote');
+    if (page) page.insertAdjacentHTML('beforeend', `<p>${escapeHtml(error.message)}</p>`);
+  }
+}
 
-  if (!Number.isInteger(montant) || montant === 0) {
-    return null;
+async function chargerCotisations() {
+  try {
+    const data = await apiFetch('/api/cotisations/me');
+    cotisations = data.cotisations || [];
+    renderCotisations();
+  } catch (error) {
+    renderTableError('cotisations-list', 4, error.message);
+  }
+}
+
+async function chargerSante() {
+  try {
+    financialHealth = await apiFetch('/api/sante');
+    renderHealthScore();
+  } catch (error) {
+    financialHealth = null;
+    renderHealthScore();
+  }
+}
+
+function renderTableError(id, colspan, message) {
+  const target = document.getElementById(id);
+  if (target) target.innerHTML = `<tr><td colspan="${colspan}">${escapeHtml(message)}</td></tr>`;
+}
+
+function renderTransactions() {
+  const tbody = document.getElementById('transactions-list');
+  if (!tbody) return;
+
+  if (!transactions.length) {
+    tbody.innerHTML = '<tr><td colspan="5">Aucune transaction enregistree.</td></tr>';
+  } else {
+    tbody.innerHTML = transactions.map(transaction => {
+      const amount = Number(transaction.montant || 0);
+      return `
+        <tr>
+          <td>${formatDate(transaction.date)}</td>
+          <td>${escapeHtml(transaction.libelle)}</td>
+          <td class="${amount >= 0 ? 'montant-positif' : 'montant-negatif'}">${formatMontant(amount)}</td>
+          <td class="hash">
+            <button class="hash-button" onclick="afficherRecu('${escapeHtml(transaction.id)}')">${shortHash(transaction.hash)}</button>
+          </td>
+          <td><span class="badge-scelle">${escapeHtml(transaction.statut || 'scelle')}</span></td>
+        </tr>
+      `;
+    }).join('');
   }
 
-  return montant;
+  document.getElementById('proof-count').textContent = transactions.length;
+  document.getElementById('proof-last').textContent = transactions[0] ? formatDate(transactions[0].date) : '-';
+  renderDashboard();
+}
+
+function renderMembers() {
+  const tbody = document.getElementById('members-list');
+  if (!tbody) return;
+
+  if (!members.length) {
+    tbody.innerHTML = '<tr><td colspan="6">Aucun membre enregistre.</td></tr>';
+  } else {
+    tbody.innerHTML = members.map(member => `
+      <tr>
+        <td>${member.id}</td>
+        <td>${escapeHtml(member.nom)}</td>
+        <td>${escapeHtml(member.role)}</td>
+        <td>-</td>
+        <td><span class="${member.statut === 'Actif' ? 'badge-actif' : 'badge-inactif'}">${escapeHtml(member.statut)}</span></td>
+        <td>
+          <button class="status-button" onclick="attribuerRole('${member.id}')" ${currentUser?.permissions.canManageMembers ? '' : 'disabled'}>
+            Attribuer role
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  document.getElementById('members-count').textContent = members.length;
+  document.getElementById('sidebar-members-count').textContent = `${members.length} personnes`;
+  document.getElementById('active-members-count').textContent = members.filter(member => member.statut === 'Actif').length;
+}
+
+function renderVotes() {
+  const page = document.getElementById('page-vote');
+  if (!page) return;
+
+  page.querySelectorAll('.vote-card').forEach(card => card.remove());
+  document.getElementById('proposal-panel')?.classList.add('hidden');
+
+  const visibleVotes = votes.filter(vote => vote.statut === 'ouvert' || vote.statut !== 'ouvert');
+
+  if (!visibleVotes.length) {
+    page.insertAdjacentHTML('beforeend', '<div class="vote-card"><h3>Aucune proposition</h3><p class="vote-info">Les nouvelles propositions apparaitront ici.</p></div>');
+  } else {
+    page.insertAdjacentHTML('beforeend', visibleVotes.map(renderVoteCard).join(''));
+  }
+
+  document.getElementById('open-votes-count').textContent = votes.filter(vote => vote.statut === 'ouvert').length;
+  document.getElementById('votes-proof-count').textContent = votes.length;
+  applyPermissions();
+  renderDashboard();
+}
+
+function renderVoteCard(vote) {
+  const total = Number(vote.pour || 0) + Number(vote.contre || 0);
+  const pourPct = total ? Math.round((Number(vote.pour || 0) / total) * 100) : 0;
+  const contrePct = total ? 100 - pourPct : 0;
+  const closed = vote.statut !== 'ouvert';
+
+  return `
+    <div class="vote-card" data-vote-id="${vote.id}">
+      <h3>${escapeHtml(vote.titre)}</h3>
+      <p class="vote-budget">Budget estime : ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA</p>
+      ${closed ? `
+        <div class="vote-barre">
+          <div class="vote-pour" style="width: ${pourPct}%">${pourPct}% Pour</div>
+          <div class="vote-contre" style="width: ${contrePct}%">${contrePct}%</div>
+        </div>
+        <p class="vote-info">${vote.pour || 0} votes pour · ${vote.contre || 0} votes contre · Statut : ${escapeHtml(vote.statut)}</p>
+      ` : `
+        <p class="vote-info">Ouvert jusqu'au ${formatDateTime(vote.expires_at)}. Resultat masque jusqu'a la cloture.</p>
+      `}
+      ${vote.statut === 'ouvert' ? `
+        <div class="vote-actions">
+          <button class="btn-pour" onclick="voter(${vote.id}, 'pour')">Voter Pour</button>
+          <button class="btn-contre" onclick="voter(${vote.id}, 'contre')">Voter Contre</button>
+        </div>
+      ` : ''}
+      <p class="vote-blockchain">Resultat ${closed ? 'publie' : 'en attente de cloture'}</p>
+    </div>
+  `;
+}
+
+function renderCotisations() {
+  const tbody = document.getElementById('cotisations-list');
+  if (!tbody) return;
+
+  if (!cotisations.length) {
+    tbody.innerHTML = '<tr><td colspan="4">Aucune cotisation personnelle.</td></tr>';
+  } else {
+    tbody.innerHTML = cotisations.map(cotisation => `
+      <tr>
+        <td>${formatDate(cotisation.date)}</td>
+        <td>${formatAbsoluteMontant(cotisation.montant)}</td>
+        <td>${escapeHtml(cotisation.mode)}</td>
+        <td>${escapeHtml(cotisation.statut)}</td>
+      </tr>
+    `).join('');
+  }
+}
+
+function renderNotifications() {
+  const list = document.getElementById('notifications-list');
+  if (!list) return;
+
+  if (!notifications.length) {
+    list.innerHTML = '<p>Aucune notification pour le moment.</p>';
+    return;
+  }
+
+  list.innerHTML = notifications.map(notification => `
+    <div class="membres-stats">
+      <strong>${escapeHtml(notification.type || 'notification')}</strong>
+      <p>${escapeHtml(notification.message)}</p>
+      <small>${formatDateTime(notification.created_at)}</small>
+    </div>
+  `).join('');
+}
+
+function renderDashboard() {
+  const balance = transactions.reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthlyTransactions = transactions.filter(transaction => String(transaction.date || '').slice(0, 7) === currentMonth);
+  const contributions = cotisations.reduce((total, cotisation) => total + Number(cotisation.montant || 0), 0);
+  const expenses = monthlyTransactions
+    .filter(transaction => Number(transaction.montant || 0) < 0)
+    .reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
+
+  document.getElementById('coop-balance').textContent = formatAbsoluteMontant(balance);
+  document.getElementById('monthly-contributions').textContent = formatAbsoluteMontant(contributions);
+  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(expenses);
+
+  renderHealthScore();
+}
+
+function renderHealthScore() {
+  const scoreNode = document.getElementById('financial-health-score');
+  if (!scoreNode) return;
+
+  if (!financialHealth) {
+    scoreNode.textContent = '-';
+    scoreNode.style.color = '#1B4F72';
+    return;
+  }
+
+  const score = Number(financialHealth.score || 0);
+  scoreNode.textContent = `${score}%`;
+
+  if (score < 40) {
+    scoreNode.style.color = '#C0392B';
+  } else if (score <= 70) {
+    scoreNode.style.color = '#D68910';
+  } else {
+    scoreNode.style.color = '#1E8449';
+  }
+}
+
+function applyPermissions() {
+  if (!currentUser) return;
+
+  const permissions = currentUser.permissions;
+  const setVisible = (id, visible) => {
+    const element = document.getElementById(id);
+    if (element) element.classList.toggle('hidden', !visible);
+  };
+
+  const newTransactionBtn = document.getElementById('new-transaction-btn');
+  if (newTransactionBtn) newTransactionBtn.disabled = !permissions.canTransact;
+
+  const proposalBtn = document.getElementById('proposal-btn');
+  if (proposalBtn) proposalBtn.disabled = !permissions.canSuggest;
+
+  const addMemberBtn = document.getElementById('add-member-btn');
+  if (addMemberBtn) addMemberBtn.disabled = !permissions.canManageMembers;
+
+  setVisible('manual-cotisation-form', permissions.canTransact);
+
+  document.querySelectorAll('.btn-pour, .btn-contre').forEach(button => {
+    button.disabled = !permissions.canVote;
+  });
 }
 
 async function enregistrerTransaction() {
-  if (!currentProfile?.canTransact) {
-    alert('Seule la tresoriere peut ajouter une transaction.');
+  if (!currentUser?.permissions.canTransact) {
+    alert('Seul le Tresorier peut ajouter une transaction.');
     return;
   }
 
   const libelle = prompt('Libelle de la transaction :')?.trim();
   if (!libelle) return;
 
-  const montantSaisi = prompt('Montant (FCFA) :');
-  if (!montantSaisi) return;
-
-  const montant = lireMontant(montantSaisi);
+  const montant = lireMontant(prompt('Montant (FCFA) :'));
   if (montant === null) {
-    alert('Le montant doit etre un nombre entier non nul. Exemple : 5000 ou -150000.');
+    alert('Le montant doit etre un entier non nul.');
     return;
   }
 
-  let memberId = '';
-  if (montant > 0 && libelle.toLowerCase().includes('cotisation')) {
-    const choix = prompt(
-      'ID du membre concerne par cette cotisation (laisser vide si non applicable) :\n' +
-      members.map(member => `${member.id} - ${member.nom} (${member.cotisations.toLocaleString('fr-FR')} FCFA)`).join('\n')
-    )?.trim();
+  const voteId = prompt('ID du vote valide associe :')?.trim();
+  if (!voteId) return;
 
-    memberId = choix || '';
-  } else if (montant < 0) {
-    alert('Cette depense reduira le solde total de la cooperative, sans modifier les cotisations individuelles.');
+  const payload = { libelle, montant, vote_id: Number(voteId) };
+
+  if (!navigator.onLine) {
+    queuePendingTransaction(payload);
+    alert('Connexion absente. Transaction ajoutee a la file d attente.');
+    return;
   }
 
-  const btn = document.getElementById('new-transaction-btn');
-  if (btn) {
-    btn.textContent = 'Enregistrement sur blockchain...';
-    btn.disabled = true;
-  }
+  await submitTransactionPayload(payload);
+}
 
+async function submitTransactionPayload(payload) {
+  const data = await apiFetch('/api/transactions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  transactions.unshift(data.transaction);
+  renderTransactions();
+  afficherRecu(data.transaction.id);
+}
+
+function queuePendingTransaction(payload) {
+  const pending = getPendingTransactions();
+  pending.push(payload);
+  sessionStorage.setItem(PENDING_TRANSACTIONS_KEY, JSON.stringify(pending));
+}
+
+function getPendingTransactions() {
   try {
-    const response = await fetch('/api/transaction', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ libelle, montant, memberId })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Transaction refusee');
-    }
-
-    transactions.unshift(data.transaction);
-    if (data.member) {
-      members = members.map(member => member.id === data.member.id ? data.member : member);
-      renderMembers();
-    }
-    renderTransactions();
-    afficherRecu(data.transaction.id);
-    alert(`Transaction enregistree sur Stellar.\nHash : ${data.transaction.hash}`);
+    return JSON.parse(sessionStorage.getItem(PENDING_TRANSACTIONS_KEY) || '[]');
   } catch (error) {
-    alert(error.message || 'Erreur lors de l enregistrement');
-    console.error(error);
-  } finally {
-    if (btn) {
-      btn.textContent = '+ Nouvelle Transaction';
-      btn.disabled = false;
-    }
+    return [];
   }
 }
 
+async function flushPendingTransactions() {
+  if (!navigator.onLine || !getToken()) return;
+
+  const pending = getPendingTransactions();
+  if (!pending.length) return;
+
+  const remaining = [];
+  for (const payload of pending) {
+    try {
+      await submitTransactionPayload(payload);
+    } catch (error) {
+      remaining.push(payload);
+    }
+  }
+
+  sessionStorage.setItem(PENDING_TRANSACTIONS_KEY, JSON.stringify(remaining));
+  updateNetworkStatus();
+}
+
 function afficherRecu(id) {
-  const transaction = transactions.find(item => item.id === id);
+  const transaction = transactions.find(item => String(item.id) === String(id));
   if (!transaction) return;
 
   document.getElementById('receipt-title').textContent = transaction.libelle;
   document.getElementById('receipt-date').textContent = formatDate(transaction.date);
   document.getElementById('receipt-amount').textContent = formatMontant(transaction.montant);
-  document.getElementById('receipt-hash').textContent = transaction.hash;
-  document.getElementById('receipt-link').href = transaction.explorer;
+  document.getElementById('receipt-hash').textContent = transaction.hash || '-';
+  document.getElementById('receipt-link').href = transaction.explorer || '#';
   document.getElementById('receipt-panel').classList.remove('hidden');
 }
 
@@ -483,201 +700,244 @@ function fermerRecu() {
   document.getElementById('receipt-panel').classList.add('hidden');
 }
 
-function suggererOperation() {
-  if (!currentProfile?.canSuggest) {
-    alert('Seul le president peut suggerer une operation.');
+async function suggererOperation() {
+  if (!currentUser?.permissions.canSuggest) {
+    alert('Seul le President peut suggerer une operation.');
     return;
   }
 
   const titre = prompt('Operation a soumettre au vote :')?.trim();
   if (!titre) return;
 
-  const budget = prompt('Budget estime (FCFA) :')?.trim();
-  if (!budget) return;
-
-  const montantBudget = lireMontant(budget);
-  if (montantBudget === null || montantBudget < 0) {
-    alert('Le budget doit etre un nombre entier positif.');
+  const budget = lireMontant(prompt('Budget estime (FCFA) :'));
+  if (budget === null || budget < 0) {
+    alert('Le budget doit etre un entier positif.');
     return;
   }
 
-  document.getElementById('proposal-title').textContent = titre;
-  document.getElementById('proposal-budget').textContent = `Budget estime : ${montantBudget.toLocaleString('fr-FR')} FCFA`;
-  document.getElementById('proposal-panel').classList.remove('hidden');
-  alert('Operation suggeree. Passe en role Membre pour simuler la validation par vote.');
+  const duree = Number(prompt('Duree du vote en heures (minimum 72) :', '72') || 72);
+
+  try {
+    await apiFetch('/api/votes', {
+      method: 'POST',
+      body: JSON.stringify({ titre, budget, duree_heures: Math.max(duree, 72) }),
+    });
+    await chargerVotes();
+  } catch (error) {
+    alert(error.message || 'Creation du vote impossible.');
+  }
+}
+
+async function voter(voteId, choix) {
+  if (!currentUser?.permissions.canVote) {
+    alert('Seuls les membres peuvent voter.');
+    return;
+  }
+
+  try {
+    await apiFetch(`/api/votes/${voteId}/vote`, {
+      method: 'POST',
+      body: JSON.stringify({ choix }),
+    });
+    alert('Vote enregistre.');
+    await chargerVotes();
+  } catch (error) {
+    alert(error.message || 'Vote refuse.');
+  }
+}
+
+async function attribuerRole(memberId) {
+  if (!currentUser?.permissions.canManageMembers) return;
+
+  const role = prompt('Nouveau role :')?.trim();
+  if (!role) return;
+
+  const voteId = prompt('ID du vote valide autorisant ce role :')?.trim();
+  if (!voteId) return;
+
+  try {
+    await apiFetch(`/api/members/${memberId}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role, vote_id: Number(voteId) }),
+    });
+    await chargerMembres();
+  } catch (error) {
+    alert(error.message || 'Attribution impossible.');
+  }
 }
 
 async function ajouterMembre() {
-  if (!currentProfile?.canManageMembers) {
-    alert('Seuls le president et ses collaborateurs peuvent ajouter une personne.');
-    return;
-  }
+  alert('Les nouveaux membres creent maintenant leur compte depuis l ecran de connexion.');
+}
 
-  const nom = prompt('Nom complet de la personne :')?.trim();
-  if (!nom) return;
+async function enregistrerCotisationManuelle(event) {
+  event.preventDefault();
 
-  const role = prompt('Role dans la cooperative :', 'Membre')?.trim();
-  if (!role) return;
-
-  const cotisationsSaisies = prompt('Cotisations versees (FCFA) :', '0');
-  if (cotisationsSaisies === null) return;
-
-  const cotisations = Number(String(cotisationsSaisies).replace(/\s/g, '').replace(',', '.'));
-  if (!Number.isInteger(cotisations) || cotisations < 0) {
-    alert('Les cotisations doivent etre un entier positif ou nul.');
+  if (!currentUser?.permissions.canTransact) {
+    alert('Seul le Tresorier peut enregistrer une cotisation.');
     return;
   }
 
   try {
-    const response = await fetch('/api/members', {
+    await apiFetch('/api/cotisations', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nom, role, cotisations, statut: 'Actif' })
+      body: JSON.stringify({
+        member_id: Number(document.getElementById('cotisation-member-id').value),
+        montant: Number(document.getElementById('cotisation-montant').value),
+        mode: document.getElementById('cotisation-mode').value.trim(),
+      }),
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Ajout refuse.');
-    }
-
-    members.push(data.member);
-    renderMembers();
-    alert(`${data.member.nom} a ete ajoute a la cooperative.`);
+    event.target.reset();
+    await chargerCotisations();
   } catch (error) {
-    alert(error.message || 'Erreur lors de l ajout.');
-    console.error(error);
+    alert(error.message || 'Cotisation refusee.');
   }
 }
 
-async function changerStatutMembre(memberId) {
-  if (!currentProfile?.canManageMembers) {
-    alert('Seuls le president et ses collaborateurs peuvent modifier le statut des comptes.');
+function initierPaiementFedapay() {
+  const amount = Number(prompt('Montant de la cotisation FedaPay (FCFA) :') || 0);
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    alert('Le montant doit etre un entier positif.');
     return;
   }
 
-  const member = members.find(item => item.id === memberId);
-  if (!member) return;
-
-  const statut = member.statut === 'Actif' ? 'Inactif' : 'Actif';
-
-  try {
-    const response = await fetch(`/api/members/${encodeURIComponent(memberId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ statut })
+  if (window.FedaPay?.init) {
+    window.FedaPay.init({
+      public_key: window.FEDAPAY_PUBLIC_KEY,
+      transaction: { amount, description: 'Cotisation CoopLedger' },
+      onComplete: () => chargerCotisations(),
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Modification refusee.');
-    }
-
-    members = members.map(item => item.id === data.member.id ? data.member : item);
-    renderMembers();
-  } catch (error) {
-    alert(error.message || 'Erreur lors de la modification du statut.');
-    console.error(error);
-  }
-}
-
-async function supprimerMembre(memberId) {
-  if (!currentProfile?.canManageMembers) {
-    alert('Seuls le president et ses collaborateurs peuvent supprimer un compte.');
     return;
   }
 
-  if (currentProfile.id === memberId) {
-    alert('Vous ne pouvez pas supprimer le compte actuellement connecte.');
-    return;
-  }
-
-  const member = members.find(item => item.id === memberId);
-  if (!member) return;
-
-  const confirmed = confirm(`Supprimer ${member.nom} de la cooperative ? Cette action retire son profil de connexion.`);
-  if (!confirmed) return;
-
-  try {
-    const response = await fetch(`/api/members/${encodeURIComponent(memberId)}`, {
-      method: 'DELETE'
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Suppression refusee.');
-    }
-
-    members = members.filter(item => item.id !== data.member.id);
-    renderMembers();
-  } catch (error) {
-    alert(error.message || 'Erreur lors de la suppression.');
-    console.error(error);
-  }
+  alert('FedaPay n est pas disponible sur cette page. Le paiement sera actif quand le script FedaPay sera charge.');
 }
 
-function lancerDemo() {
-  demoIndex = 0;
-  document.getElementById('demo-guide').classList.remove('hidden');
-  afficherEtapeDemo();
-}
+function startNotificationsStream() {
+  stopNotificationsStream();
 
-function afficherEtapeDemo() {
-  const step = demoSteps[demoIndex];
-  openSession(profiles[step.profile]);
-  showPage(step.page);
-  document.getElementById('demo-title').textContent = step.title;
-  document.getElementById('demo-text').textContent = step.text;
-}
+  if (!getToken()) return;
 
-function etapeDemoSuivante() {
-  demoIndex += 1;
+  sseAbortController = new AbortController();
 
-  if (demoIndex >= demoSteps.length) {
-    arreterDemo();
-    return;
-  }
-
-  afficherEtapeDemo();
-}
-
-function arreterDemo() {
-  document.getElementById('demo-guide').classList.add('hidden');
-}
-
-// Voter
-document.addEventListener('DOMContentLoaded', () => {
-  chargerTransactions();
-  chargerMembres();
-
-  document.querySelectorAll('.nav-item').forEach(item => {
-    item.addEventListener('click', function(event) {
-      event.preventDefault();
-      const match = this.getAttribute('onclick').match(/showPage\('(.+)'\)/);
-      if (match) {
-        showPage(match[1], this);
-      }
-    });
-  });
-
-  document.querySelectorAll('.btn-pour, .btn-contre').forEach(btn => {
-    btn.addEventListener('click', function() {
-      if (!currentProfile?.canVote) {
-        alert('Seuls les membres peuvent voter.');
+  fetch('/api/notifications/stream', {
+    headers: { Authorization: `Bearer ${getToken()}` },
+    signal: sseAbortController.signal,
+  })
+    .then(async response => {
+      if (response.status === 401) {
+        handleAuthExpired();
         return;
       }
 
-      const voteCard = this.closest('.vote-card') || this.closest('.proposal-panel');
-      const titre = voteCard.querySelector('h3, h2').textContent;
-      const choix = this.classList.contains('btn-pour') ? 'POUR' : 'CONTRE';
+      if (!response.ok || !response.body) {
+        throw new Error('Flux SSE indisponible.');
+      }
 
-      alert(`Vote enregistre.\nProposition : ${titre}\nVotre choix : ${choix}\nEnregistre sur Stellar Testnet`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      this.textContent = 'Vote';
-      this.disabled = true;
-      voteCard.querySelector(this.classList.contains('btn-pour') ? '.btn-contre' : '.btn-pour').disabled = true;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split('\n\n');
+        buffer = events.pop();
+
+        events.forEach(parseSseEvent);
+      }
+    })
+    .catch(error => {
+      if (error.name !== 'AbortError') scheduleSseReconnect();
     });
+}
+
+function parseSseEvent(eventText) {
+  const line = eventText.split('\n').find(item => item.startsWith('data: '));
+  if (!line) return;
+
+  try {
+    const notification = JSON.parse(line.slice(6));
+    notifications.unshift(notification);
+    renderNotifications();
+    refreshDataAfterNotification(notification);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function refreshDataAfterNotification(notification) {
+  if (notification.type === 'transaction') chargerTransactions();
+  if (notification.type === 'vote') chargerVotes();
+  if (notification.type === 'membre') chargerMembres();
+  if (notification.type === 'cotisation') chargerCotisations();
+}
+
+function scheduleSseReconnect() {
+  clearTimeout(sseReconnectTimer);
+  sseReconnectTimer = setTimeout(startNotificationsStream, 3000);
+}
+
+function stopNotificationsStream() {
+  clearTimeout(sseReconnectTimer);
+  if (sseAbortController) {
+    sseAbortController.abort();
+    sseAbortController = null;
+  }
+}
+
+function updateNetworkStatus() {
+  const status = document.getElementById('network-status');
+  if (!status) return;
+
+  const pending = getPendingTransactions().length;
+  status.textContent = navigator.onLine
+    ? `En ligne${pending ? ` · ${pending} transaction(s) en attente` : ''}`
+    : `Hors ligne · ${pending} transaction(s) en attente`;
+}
+
+function lancerDemo() {
+  alert('La demo locale a ete remplacee par les donnees reelles de l API.');
+}
+
+function etapeDemoSuivante() {}
+
+function arreterDemo() {
+  document.getElementById('demo-guide')?.classList.add('hidden');
+}
+
+window.showPage = showPage;
+window.deconnecter = deconnecter;
+window.enregistrerProfil = enregistrerProfil;
+window.enregistrerTransaction = enregistrerTransaction;
+window.afficherRecu = afficherRecu;
+window.fermerRecu = fermerRecu;
+window.suggererOperation = suggererOperation;
+window.voter = voter;
+window.attribuerRole = attribuerRole;
+window.ajouterMembre = ajouterMembre;
+window.enregistrerCotisationManuelle = enregistrerCotisationManuelle;
+window.initierPaiementFedapay = initierPaiementFedapay;
+window.lancerDemo = lancerDemo;
+window.etapeDemoSuivante = etapeDemoSuivante;
+window.arreterDemo = arreterDemo;
+
+document.addEventListener('DOMContentLoaded', () => {
+  installDynamicInterface();
+  updateNetworkStatus();
+
+  window.addEventListener('online', () => {
+    updateNetworkStatus();
+    flushPendingTransactions();
+    startNotificationsStream();
   });
+
+  window.addEventListener('offline', updateNetworkStatus);
+
+  const token = getToken();
+  if (token) {
+    openSessionFromToken(token);
+  }
 });

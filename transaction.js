@@ -36,3 +36,7 @@ async function enregistrerTransaction(libelle, montant) {
 // Test — cotisation membre
 // Commenté pour éviter l'exécution automatique au chargement
 // enregistrerTransaction('Cotisation_Membre_001', 5000);
+
+module.exports = {
+  enregistrerTransaction,
+};
