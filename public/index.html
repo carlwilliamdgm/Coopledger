@@ -157,20 +157,52 @@
           <button id="new-transaction-btn" class="btn-primary" onclick="enregistrerTransaction()">+ Nouvelle
             Transaction</button>
         </div>
+        <div id="tx-filters" class="login-panel hidden">
+          <p class="panel-label">Filtres</p>
+          <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+            <div>
+              <label for="tx-filter-type">Type</label>
+              <select id="tx-filter-type">
+                <option value="tous">Tous</option>
+                <option value="recette">Recette</option>
+                <option value="depense">Dépense</option>
+                <option value="cotisation">Cotisation</option>
+              </select>
+            </div>
+            <div>
+              <label for="tx-filter-statut">Statut</label>
+              <select id="tx-filter-statut">
+                <option value="">Tous</option>
+                <option value="scellé">Scellé</option>
+                <option value="confirmé">Confirmé</option>
+              </select>
+            </div>
+            <div>
+              <label for="tx-filter-date-from">À partir du</label>
+              <input id="tx-filter-date-from" type="date">
+            </div>
+            <div>
+              <label for="tx-filter-date-to">Jusqu'au</label>
+              <input id="tx-filter-date-to" type="date">
+            </div>
+            <button type="button" class="btn-secondary" onclick="appliquerFiltresTransactions()">Appliquer</button>
+          </div>
+        </div>
         <div class="table-container">
           <table>
             <thead>
               <tr>
                 <th>Date</th>
                 <th>Libellé</th>
+                <th>Type</th>
                 <th>Montant</th>
-                <th>Hash Blockchain</th>
+                <th>Hash Stellar</th>
                 <th>Statut</th>
               </tr>
             </thead>
             <tbody id="transactions-list">
               <tr>
-                <td colspan="5">Chargement des transactions...</td>
+                <td colspan="6">Chargement des transactions...</td>
               </tr>
             </tbody>
           </table>

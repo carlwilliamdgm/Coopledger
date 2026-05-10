@@ -48,6 +48,54 @@ function syncDemoBanner() {
   banner.classList.toggle('hidden', !isDemoSession());
 }
 
+function urlBase64ToUint8Array(base64String) {
+  const raw = String(base64String || '').trim();
+  const padding = '='.repeat((4 - (raw.length % 4)) % 4);
+  const base64 = (raw + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function subscribeToWebPush() {
+  if (isDemoSession()) {
+    return;
+  }
+  try {
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return;
+    }
+    const res = await fetch('/api/push/public-key');
+    const data = await res.json().catch(() => ({}));
+    const key = String(data.public_key || '').trim();
+    if (!key) {
+      return;
+    }
+    let perm = Notification.permission;
+    if (perm === 'default') {
+      perm = await Notification.requestPermission();
+    }
+    if (perm !== 'granted') {
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const subscription = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(key),
+    });
+    const payload = subscription.toJSON ? subscription.toJSON() : subscription;
+    await apiFetch('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription: payload }),
+    });
+  } catch (_) {
+    /* Notifications push facultatives */
+  }
+}
+
 function decodeJwt(token) {
   try {
     const payload = token.split('.')[1];
@@ -77,6 +125,11 @@ function getPermissions(role) {
       canTransact: false,
       canVote: false,
       canManageMembers: false,
+      canSecretaryFlows: false,
+      canAssignRoleDropdown: false,
+      canResetPassword: false,
+      canProlongVotes: false,
+      isPresident: false,
       canVerify: false,
       canViewReport: true,
       isAdmin: false,
@@ -84,14 +137,22 @@ function getPermissions(role) {
     };
   }
 
+  const isAdmin = normalized === 'admin';
+  const isSecretary = normalized === 'secretaire';
+
   return {
     canSuggest: normalized === 'president',
     canTransact: normalized === 'tresorier' || normalized === 'tresoriere',
     canVote: normalized === 'membre',
     canManageMembers: ['admin', 'secretaire'].includes(normalized),
+    canSecretaryFlows: isSecretary,
+    canAssignRoleDropdown: isAdmin,
+    canResetPassword: isAdmin,
+    canProlongVotes: isAdmin,
+    isPresident: normalized === 'president',
     canVerify: normalized === 'verificateur',
     canViewReport: ['president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
-    isAdmin: normalized === 'admin',
+    isAdmin,
     isDemo: false,
   };
 }
@@ -226,6 +287,7 @@ function openSessionFromToken(token) {
   applyPermissions();
   startAfterLogin();
   startNotificationsStream();
+  subscribeToWebPush();
 }
 
 async function startAfterLogin() {
@@ -265,6 +327,9 @@ function onPageShown(pageId) {
   if (pageId === 'notifications') {
     chargerNotificationsHistorique();
   }
+  if (pageId === 'transactions') {
+    document.getElementById('tx-filters')?.classList.toggle('hidden', isDemoSession());
+  }
 }
 
 function installDynamicInterface() {
@@ -285,15 +350,35 @@ function installTransactionForm() {
   if (!header) return;
 
   header.insertAdjacentHTML('afterend', `
-    <form id="transaction-form" class="login-panel hidden" onsubmit="soumettreTransaction(event)">
-      <p class="panel-label">Nouvelle transaction</p>
-      <label for="transaction-libelle">Libellé</label>
-      <input id="transaction-libelle" type="text" required>
-      <label for="transaction-montant">Montant (FCFA)</label>
-      <input id="transaction-montant" type="number" required>
-      <label for="transaction-vote-select">Vote validé associé</label>
-      <select id="transaction-vote-select" required></select>
-      <button class="btn-primary" type="submit">Enregistrer</button>
+    <form id="transaction-form" class="login-panel hidden" onsubmit="soumettreFluxFinancier(event)">
+      <p class="panel-label">Mouvement financier</p>
+      <label for="txn-flow-type">Type d'opération</label>
+      <select id="txn-flow-type" required onchange="majChampsFluxFinancier()">
+        <option value="">— Choisir —</option>
+        <option value="recette">Recette</option>
+        <option value="depense">Dépense</option>
+        <option value="cotisation_manuelle">Cotisation manuelle</option>
+      </select>
+      <div id="txn-recette-depense-block" class="hidden">
+        <label for="transaction-libelle">Libellé</label>
+        <input id="transaction-libelle" type="text">
+        <label for="transaction-montant">Montant (FCFA, entier positif)</label>
+        <input id="transaction-montant" type="number" min="1" step="1">
+        <label for="transaction-vote-select">Vote validé associé</label>
+        <select id="transaction-vote-select"></select>
+      </div>
+      <div id="txn-cotisation-block" class="hidden">
+        <label for="txn-cot-member">Membre</label>
+        <select id="txn-cot-member"></select>
+        <label for="txn-cot-montant">Montant</label>
+        <input id="txn-cot-montant" type="number" min="1" step="1">
+        <label for="txn-cot-mode">Mode</label>
+        <select id="txn-cot-mode">
+          <option value="Cash">Cash</option>
+          <option value="Mobile Money">Mobile Money</option>
+        </select>
+      </div>
+      <button class="btn-primary" type="submit">Enregistrer et sceller</button>
     </form>
   `);
 }
@@ -610,14 +695,36 @@ async function chargerConfig() {
   }
 }
 
+function buildTransactionQueryString() {
+  const params = new URLSearchParams();
+  const typeEl = document.getElementById('tx-filter-type');
+  const statutEl = document.getElementById('tx-filter-statut');
+  const fromEl = document.getElementById('tx-filter-date-from');
+  const toEl = document.getElementById('tx-filter-date-to');
+  const type = String(typeEl?.value || '').trim();
+  const statut = String(statutEl?.value || '').trim();
+  const dateFrom = String(fromEl?.value || '').trim();
+  const dateTo = String(toEl?.value || '').trim();
+  if (type && type !== 'tous') params.set('type', type);
+  if (statut) params.set('statut', statut);
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
 async function chargerTransactions() {
   try {
-    const data = await apiFetch('/api/transactions');
+    const data = await apiFetch(`/api/transactions${buildTransactionQueryString()}`);
     transactions = data.transactions || [];
     renderTransactions();
   } catch (error) {
-    renderTableError('transactions-list', 5, error.message);
+    renderTableError('transactions-list', 6, error.message);
   }
+}
+
+function appliquerFiltresTransactions() {
+  chargerTransactions();
 }
 
 async function chargerMembres() {
@@ -626,8 +733,9 @@ async function chargerMembres() {
     members = data.members || [];
     renderMembers();
     renderCotisationMemberOptions();
+    renderFluxCotisationMemberOptions();
   } catch (error) {
-    renderTableError('members-list', 5, error.message);
+    renderTableError('members-list', error.message === 'Acces non autorise.' ? 3 : 6, error.message);
   }
 }
 
@@ -636,7 +744,16 @@ function renderCotisationMemberOptions() {
   if (!select) return;
   const sorted = [...members].sort((a, b) => String(a.nom).localeCompare(String(b.nom), 'fr'));
   select.innerHTML = sorted.length
-    ? sorted.map(member => `<option value="${member.id}">${escapeHtml(member.nom)} (${escapeHtml(member.username)})</option>`).join('')
+    ? sorted.map(member => `<option value="${member.id}">${escapeHtml(member.nom)} (${escapeHtml(member.username || member.id)})</option>`).join('')
+    : '<option value="">Aucun membre</option>';
+}
+
+function renderFluxCotisationMemberOptions() {
+  const select = document.getElementById('txn-cot-member');
+  if (!select) return;
+  const sorted = [...members].sort((a, b) => String(a.nom).localeCompare(String(b.nom), 'fr'));
+  select.innerHTML = sorted.length
+    ? sorted.map(member => `<option value="${member.id}">${escapeHtml(member.nom)} (${escapeHtml(member.username || member.id)})</option>`).join('')
     : '<option value="">Aucun membre</option>';
 }
 
@@ -659,7 +776,11 @@ function renderTransactionVoteOptions() {
 
   const validated = votes.filter(vote => vote.statut === 'validé');
   select.innerHTML = validated.length
-    ? validated.map(vote => `<option value="${vote.id}">${escapeHtml(vote.titre)} · ${formatDateTime(vote.expires_at)}</option>`).join('')
+    ? validated.map(vote => `
+        <option value="${vote.id}">
+          ${escapeHtml(vote.titre)} — budget ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA
+        </option>`.trim())
+      .join('')
     : '<option value="">Aucun vote validé</option>';
 }
 
@@ -716,19 +837,27 @@ function renderTransactions() {
   if (!tbody) return;
 
   if (!transactions.length) {
-    tbody.innerHTML = '<tr><td colspan="5">Aucune transaction enregistree.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6">Aucune transaction enregistree.</td></tr>';
   } else {
     tbody.innerHTML = transactions.map(transaction => {
       const amount = Number(transaction.montant || 0);
+      const txType = transaction.type || (amount < 0 ? 'depense' : 'recette');
+      const hash = transaction.hash;
+      const explorer = transaction.explorer || '';
+      const detailArg = JSON.stringify(String(transaction.id));
+      const linkPart = hash && explorer
+        ? `<a href="${escapeHtml(explorer)}" target="_blank" rel="noreferrer" class="hash-link">${escapeHtml(shortHash(hash))}</a>`
+        : (hash ? escapeHtml(shortHash(hash)) : '—');
+      const detailBtn = `<button type="button" class="hash-button" onclick="afficherRecu(${detailArg})">Détail</button>`;
+
       return `
         <tr>
           <td>${formatDate(transaction.date)}</td>
           <td>${escapeHtml(transaction.libelle)}</td>
+          <td>${escapeHtml(txType)}</td>
           <td class="${amount >= 0 ? 'montant-positif' : 'montant-negatif'}">${formatMontant(amount)}</td>
-          <td class="hash">
-            <button class="hash-button" onclick="afficherRecu('${escapeHtml(transaction.id)}')">${shortHash(transaction.hash)}</button>
-          </td>
-          <td><span class="badge-scelle">${escapeHtml(transaction.statut || 'scelle')}</span></td>
+          <td class="hash">${linkPart} ${hash ? detailBtn : ''}</td>
+          <td><span class="badge-scelle">${escapeHtml(transaction.statut || 'scellé')}</span></td>
         </tr>
       `;
     }).join('');
@@ -743,51 +872,76 @@ function renderMembers() {
   const tbody = document.getElementById('members-list');
   if (!tbody) return;
 
+  const theadRow = tbody.closest('table')?.querySelector('thead tr');
+  const canManage = Boolean(currentUser?.permissions.canManageMembers);
+  const detailView = Boolean(
+    currentUser?.permissions.canAssignRoleDropdown || currentUser?.permissions.canSecretaryFlows,
+  );
+  const isAdmin = Boolean(currentUser?.permissions.isAdmin);
+  const isSecretary = Boolean(currentUser?.permissions.canSecretaryFlows);
+
+  if (theadRow) {
+    theadRow.innerHTML = detailView
+      ? '<th>Nom</th><th>Email</th><th>Rôle</th><th>Cotisations</th><th>Statut</th><th>Action</th>'
+      : '<th>Nom</th><th>Rôle</th><th>Statut</th>';
+  }
+
   if (!members.length) {
-    tbody.innerHTML = '<tr><td colspan="5">Aucun membre enregistre.</td></tr>';
+    const cols = detailView ? 6 : 3;
+    tbody.innerHTML = `<tr><td colspan="${cols}">Aucun membre enregistre.</td></tr>`;
   } else {
     tbody.innerHTML = members.map(member => {
-      const canManage = Boolean(currentUser?.permissions.canManageMembers);
-      const isAdmin = Boolean(currentUser?.permissions.isAdmin);
       const roleValue = normalizeRole(member.role || 'membre');
       const mandateValue = isAdmin ? 12 : '';
-      const validatedVotes = votes.filter(v => v.statut === 'validé');
-      const voteOptions = validatedVotes.length
-        ? validatedVotes.map(v => `<option value="${v.id}">${escapeHtml(v.titre)} · ${formatDateTime(v.expires_at)}</option>`).join('')
-        : '<option value="">Aucun vote validé</option>';
+      const cotCount = typeof member.cotisations_count === 'number' ? String(member.cotisations_count) : '—';
+
+      if (!detailView) {
+        return `
+          <tr>
+            <td>${escapeHtml(member.nom)}</td>
+            <td>${escapeHtml(member.role)}</td>
+            <td><span class="${member.statut === 'Actif' ? 'badge-actif' : 'badge-inactif'}">${escapeHtml(member.statut)}</span></td>
+          </tr>
+        `;
+      }
 
       return `
         <tr>
           <td>${escapeHtml(member.nom)}</td>
+          <td>${escapeHtml(member.email || '—')}</td>
           <td>${escapeHtml(member.role)}</td>
-          <td>-</td>
+          <td>${escapeHtml(cotCount)}</td>
           <td><span class="${member.statut === 'Actif' ? 'badge-actif' : 'badge-inactif'}">${escapeHtml(member.statut)}</span></td>
           <td>
-            ${canManage ? `
+            ${canManage && isAdmin ? `
               <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                 <select id="member-role-${member.id}">
                   ${['president','tresorier','secretaire','verificateur','membre','observateur'].map(r => `<option value="${r}" ${roleValue===r?'selected':''}>${r}</option>`).join('')}
                 </select>
-                ${isAdmin ? `
-                  <input id="member-mandate-${member.id}" type="number" min="1" value="${mandateValue}" style="width:90px" title="Durée du mandat (mois)">
-                ` : `
-                  <select id="member-vote-${member.id}" title="Vote validé justificatif">
-                    ${voteOptions}
-                  </select>
-                `}
-                <button class="status-button" onclick="attribuerRole('${member.id}')" ${canManage ? '' : 'disabled'}>
-                  Enregistrer
-                </button>
+                <input id="member-mandate-${member.id}" type="number" min="1" value="${mandateValue}" style="width:90px" title="Durée du mandat (mois)">
+                <button type="button" class="status-button" onclick="attribuerRole('${member.id}')">Enregistrer rôle</button>
               </div>
-              ${isAdmin ? `
-                <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
-                  <input id="member-resetpwd-${member.id}" type="password" minlength="6" placeholder="Nouveau mot de passe" style="width:220px">
-                  <button class="status-button" onclick="resetPassword('${member.id}')">Réinitialiser le mot de passe</button>
-                </div>
-              ` : ``}
-            ` : `
-              <button class="status-button" disabled>Attribution réservée</button>
-            `}
+              <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center;">
+                <button type="button" class="status-button" onclick="basculerStatutMembre('${member.id}', 'Actif')"
+                  ${member.statut === 'Actif' ? 'disabled' : ''}>Activer</button>
+                <button type="button" class="status-button" onclick="basculerStatutMembre('${member.id}', 'Inactif')"
+                  ${member.statut === 'Inactif' ? 'disabled' : ''}>Désactiver</button>
+                <input id="member-resetpwd-${member.id}" type="password" minlength="6" placeholder="Nouveau mot de passe" style="width:220px">
+                <button type="button" class="status-button" onclick="resetPassword('${member.id}')">Réinitialiser mot de passe</button>
+              </div>
+            ` : ''}
+            ${canManage && isSecretary && !isAdmin ? `
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <span>Rôle : ${escapeHtml(member.role)}</span>
+              </div>
+              <div style="display:flex; gap:8px; margin-top:8px;">
+                <button type="button" class="status-button" onclick="basculerStatutMembre('${member.id}', 'Actif')"
+                  ${member.statut === 'Actif' ? 'disabled' : ''}>Activer</button>
+                <button type="button" class="status-button" onclick="basculerStatutMembre('${member.id}', 'Inactif')"
+                  ${member.statut === 'Inactif' ? 'disabled' : ''}>Désactiver</button>
+              </div>
+            ` : ''}
+            ${!canManage ? '<button class="status-button" disabled>—</button>' : ''}
           </td>
         </tr>
       `;
@@ -929,10 +1083,42 @@ function renderVoteCard(vote) {
             ? renderElectionVoteButtons(vote)
             : `<button class="btn-pour" onclick="voter(${vote.id}, 'pour')">Voter Pour</button>
                <button class="btn-contre" onclick="voter(${vote.id}, 'contre')">Voter Contre</button>`}
-          ${isAdmin ? `
-            <button class="btn-secondary" type="button" onclick="cloturerVote(${vote.id})">Clôturer</button>
-            <button class="btn-secondary" type="button" onclick="annulerVote(${vote.id})">Annuler</button>
-          ` : ``}
+          ${currentUser?.permissions.canProlongVotes ? `
+            <div class="vote-prolong-inline">
+              <label for="prolong-hours-${vote.id}">Prolonger (heures)</label>
+              <input id="prolong-hours-${vote.id}" type="number" min="1" step="1" value="24" style="width:72px;">
+              <button class="btn-secondary" type="button" onclick="prolongerVoteDepuisCarte(${vote.id})">Prolonger</button>
+            </div>
+          ` : ''}
+          ${(() => {
+            const expireOk = vote.expires_at && new Date(vote.expires_at).getTime() <= Date.now();
+            const bureau = ['president', 'tresorier'].includes(normalizeRole(currentUser?.role));
+            const peutCloturerBureau = Boolean(bureau && expireOk);
+            const afficheCloture = Boolean(isAdmin || peutCloturerBureau);
+            const propId = vote.propose_par != null ? Number(vote.propose_par) : null;
+            const uid = Number(currentUser?.id);
+            const presidentAnnul = Boolean(
+              normalizeRole(currentUser?.role) === 'president'
+              && vote.type !== 'election'
+              && vote.statut === 'ouvert'
+              && propId === uid
+              && Number(vote.pour || 0) === 0
+              && Number(vote.contre || 0) === 0
+            );
+            const afficheAnnulerAdmin = Boolean(isAdmin);
+            const afficheAnnulerPresident = Boolean(presidentAnnul);
+            return `
+              ${afficheCloture ? `
+                <button class="btn-secondary" type="button" onclick="cloturerVote(${vote.id})">Clôturer</button>
+              ` : ''}
+              ${afficheAnnulerAdmin ? `
+                <button class="btn-secondary" type="button" onclick="annulerVote(${vote.id})">Annuler</button>
+              ` : ''}
+              ${afficheAnnulerPresident && !afficheAnnulerAdmin ? `
+                <button class="btn-secondary" type="button" onclick="annulerVote(${vote.id})">Annuler ma proposition</button>
+              ` : ''}
+            `;
+          })()}
         </div>
       ` : ''}
       <p class="vote-blockchain">Resultat ${closed ? 'publie' : 'en attente de cloture'}</p>
@@ -1059,15 +1245,37 @@ function applyPermissions() {
 
   const addMemberBtn = document.getElementById('add-member-btn');
   if (addMemberBtn) {
-    addMemberBtn.disabled = !permissions.isAdmin;
-    addMemberBtn.textContent = permissions.isAdmin ? 'Créer un membre' : '+ Ajouter une personne';
+    const canAdd = permissions.isAdmin || permissions.canSecretaryFlows;
+    addMemberBtn.disabled = !canAdd;
+    addMemberBtn.textContent = permissions.isAdmin ? 'Créer un membre' : 'Ajouter un membre';
   }
 
-  setVisible('manual-cotisation-form', permissions.canTransact);
+  setVisible('manual-cotisation-form', false);
 
   document.querySelectorAll('.btn-pour, .btn-contre').forEach(button => {
     button.disabled = !permissions.canVote;
   });
+}
+
+function majChampsFluxFinancier() {
+  const flow = document.getElementById('txn-flow-type')?.value || '';
+  const rd = document.getElementById('txn-recette-depense-block');
+  const cot = document.getElementById('txn-cotisation-block');
+  if (rd) rd.classList.toggle('hidden', flow !== 'recette' && flow !== 'depense');
+  if (cot) cot.classList.toggle('hidden', flow !== 'cotisation_manuelle');
+
+  const lib = document.getElementById('transaction-libelle');
+  const m = document.getElementById('transaction-montant');
+  const vs = document.getElementById('transaction-vote-select');
+  if (flow === 'recette' || flow === 'depense') {
+    if (lib) lib.required = true;
+    if (m) m.required = true;
+    if (vs) vs.required = true;
+  } else {
+    if (lib) lib.required = false;
+    if (m) m.required = false;
+    if (vs) vs.required = false;
+  }
 }
 
 async function enregistrerTransaction() {
@@ -1078,21 +1286,62 @@ async function enregistrerTransaction() {
   const form = document.getElementById('transaction-form');
   if (!form) return;
   form.classList.toggle('hidden');
+  if (!form.classList.contains('hidden')) {
+    const sel = document.getElementById('txn-flow-type');
+    if (sel) sel.value = '';
+    majChampsFluxFinancier();
+  }
 }
 
-async function soumettreTransaction(event) {
+async function soumettreFluxFinancier(event) {
   event.preventDefault();
 
+  const flow = document.getElementById('txn-flow-type')?.value || '';
+
+  if (flow === 'cotisation_manuelle') {
+    const memberId = Number(document.getElementById('txn-cot-member')?.value || 0);
+    const montant = Number(document.getElementById('txn-cot-montant')?.value || 0);
+    const mode = String(document.getElementById('txn-cot-mode')?.value || '').trim();
+    if (!Number.isInteger(memberId) || memberId <= 0) {
+      alert('Choisissez un membre.');
+      return;
+    }
+    if (!Number.isInteger(montant) || montant <= 0) {
+      alert('Montant cotisation invalide.');
+      return;
+    }
+    try {
+      const data = await apiFetch('/api/cotisations', {
+        method: 'POST',
+        body: JSON.stringify({ member_id: memberId, montant, mode }),
+      });
+      event.target.reset();
+      majChampsFluxFinancier();
+      document.getElementById('transaction-form')?.classList.add('hidden');
+      await Promise.all([chargerCotisations(), chargerTransactions()]);
+      const c = data.cotisation;
+      if (c?.explorer) {
+        alert(`Cotisation scellée. Preuve : ${c.explorer}`);
+      } else {
+        alert('Cotisation enregistrée.');
+      }
+    } catch (error) {
+      alert(error.message || 'Enregistrement impossible.');
+    }
+    return;
+  }
+
   const libelle = document.getElementById('transaction-libelle')?.value?.trim();
-  const montant = lireMontant(document.getElementById('transaction-montant')?.value);
+  const montantInput = document.getElementById('transaction-montant')?.value;
+  const montantPositif = Number(montantInput);
   const voteId = Number(document.getElementById('transaction-vote-select')?.value || 0);
 
   if (!libelle) {
     alert('Libellé obligatoire.');
     return;
   }
-  if (montant === null) {
-    alert('Le montant doit être un entier non nul.');
+  if (!Number.isInteger(montantPositif) || montantPositif <= 0) {
+    alert('Le montant doit être un entier positif.');
     return;
   }
   if (!Number.isInteger(voteId) || voteId <= 0) {
@@ -1100,17 +1349,20 @@ async function soumettreTransaction(event) {
     return;
   }
 
-  const payload = { libelle, montant, vote_id: voteId };
+  const type = flow === 'depense' ? 'depense' : 'recette';
+  const payload = { libelle, montant: montantPositif, vote_id: voteId, type };
 
   if (!navigator.onLine) {
     queuePendingTransaction(payload);
-    alert('Connexion absente. Transaction ajoutée à la file d attente.');
+    alert('Connexion absente. Mouvement ajouté à la file d\'attente.');
     return;
   }
 
   try {
     await submitTransactionPayload(payload);
     event.target.reset();
+    document.getElementById('txn-flow-type').value = '';
+    majChampsFluxFinancier();
     document.getElementById('transaction-form')?.classList.add('hidden');
   } catch (error) {
     alert(error.message || 'Enregistrement impossible.');
@@ -1223,18 +1475,47 @@ async function voter(voteId, choix) {
 }
 
 async function cloturerVote(voteId) {
-  if (!currentUser?.permissions.isAdmin) return;
+  const bureau = ['president', 'tresorier'].includes(normalizeRole(currentUser?.role));
+  if (!currentUser?.permissions.isAdmin && !bureau) {
+    return;
+  }
   try {
-    await apiFetch(`/api/votes/${voteId}/close`, { method: 'POST' });
+    await apiFetch(`/api/votes/${voteId}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     await chargerVotes();
   } catch (error) {
     alert(error.message || 'Clôture impossible.');
   }
 }
 
+async function prolongerVoteDepuisCarte(voteId) {
+  if (!currentUser?.permissions.canProlongVotes) {
+    return;
+  }
+  const input = document.getElementById(`prolong-hours-${voteId}`);
+  const hours = Number(input?.value || 0);
+  if (!Number.isInteger(hours) || hours <= 0) {
+    alert('Nombre d\'heures invalide.');
+    return;
+  }
+  try {
+    await apiFetch(`/api/votes/${voteId}/prolong`, {
+      method: 'POST',
+      body: JSON.stringify({ nouvelle_duree_heures: hours }),
+    });
+    await chargerVotes();
+  } catch (error) {
+    alert(error.message || 'Prolongation impossible.');
+  }
+}
+
 async function annulerVote(voteId) {
-  if (!currentUser?.permissions.isAdmin) return;
-  if (!confirm('Annuler ce vote ?')) return;
+  if (!confirm('Annuler cette consultation ?')) {
+    return;
+  }
   try {
     await apiFetch(`/api/votes/${voteId}/annuler`, { method: 'POST' });
     await chargerVotes();
@@ -1286,15 +1567,28 @@ async function resetPassword(memberId) {
     });
 
     if (input) input.value = '';
+    await chargerMembres();
     alert('Mot de passe réinitialisé.');
   } catch (error) {
     alert(error.message || 'Réinitialisation impossible.');
   }
 }
 
+async function basculerStatutMembre(memberId, statut) {
+  try {
+    await apiFetch(`/api/members/${memberId}/statut`, {
+      method: 'POST',
+      body: JSON.stringify({ statut }),
+    });
+    await chargerMembres();
+  } catch (error) {
+    alert(error.message || 'Mise à jour impossible.');
+  }
+}
+
 async function ajouterMembre() {
-  if (!currentUser?.permissions.isAdmin) {
-    alert('Seul l admin peut creer directement un membre.');
+  if (!currentUser?.permissions.isAdmin && !currentUser?.permissions.canSecretaryFlows) {
+    alert('Ajout réservé au bureau autorise.');
     return;
   }
 
@@ -1458,7 +1752,7 @@ async function initierPaiementFedapay(event) {
       public_key: fedapayPublicKey,
       onComplete: () => {
         alert('Paiement FedaPay terminé. Merci !');
-        chargerCotisations();
+        Promise.all([chargerCotisations(), chargerTransactions()]).catch(() => {});
       },
       onError: () => {
         alert('Paiement temporairement indisponible. Réessayez.');
@@ -1582,7 +1876,11 @@ window.showPage = showPage;
 window.deconnecter = deconnecter;
 window.enregistrerProfil = enregistrerProfil;
 window.enregistrerTransaction = enregistrerTransaction;
-window.soumettreTransaction = soumettreTransaction;
+window.soumettreFluxFinancier = soumettreFluxFinancier;
+window.majChampsFluxFinancier = majChampsFluxFinancier;
+window.appliquerFiltresTransactions = appliquerFiltresTransactions;
+window.basculerStatutMembre = basculerStatutMembre;
+window.prolongerVoteDepuisCarte = prolongerVoteDepuisCarte;
 window.afficherRecu = afficherRecu;
 window.fermerRecu = fermerRecu;
 window.suggererOperation = suggererOperation;

@@ -75,6 +75,8 @@ async function initDatabase() {
       vote_id INTEGER
     );
 
+    ALTER TABLE transactions ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'recette';
+
     CREATE TABLE IF NOT EXISTS vote_results (
       id SERIAL PRIMARY KEY,
       vote_id INTEGER REFERENCES votes(id),
@@ -92,6 +94,19 @@ async function initDatabase() {
       statut VARCHAR(20) DEFAULT 'confirmé',
       date TIMESTAMP DEFAULT NOW()
     );
+
+    ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS hash TEXT;
+    ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS explorer TEXT;
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      member_id INTEGER REFERENCES members(id) ON DELETE CASCADE,
+      subscription JSONB NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint
+      ON push_subscriptions ((subscription->>'endpoint'));
 
     CREATE TABLE IF NOT EXISTS notifications (
       id SERIAL PRIMARY KEY,
@@ -114,6 +129,9 @@ async function initDatabase() {
       timestamp TIMESTAMP DEFAULT NOW(),
       ip VARCHAR(50)
     );
+
+    INSERT INTO config (cle, valeur) VALUES ('duree_inactivite_mois', '3')
+    ON CONFLICT (cle) DO NOTHING;
   `);
 }
 

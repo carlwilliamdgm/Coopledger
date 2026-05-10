@@ -1,4 +1,4 @@
-const CACHE_NAME = 'coopledger-v1';
+const CACHE_NAME = 'coopledger-v2';
 const APP_SHELL = [
   '/',
   '/js/app.js',
@@ -23,6 +23,50 @@ self.addEventListener('activate', event => {
           .map(key => caches.delete(key))
       ))
       .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('push', (event) => {
+  let title = 'CoopLedger';
+  let body = '';
+  let data = { url: '/' };
+
+  try {
+    if (event.data) {
+      const parsed = event.data.json();
+      title = parsed.title || title;
+      body = parsed.body || body;
+      data = parsed.data || data;
+    }
+  } catch (_) {
+    body = event.data ? String(event.data.text()) : '';
+  }
+
+  const targetUrl = data.url || '/';
+
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      data: { url: targetUrl },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const urlPath = (event.notification.data && event.notification.data.url) || '/';
+  const fullUrl = new URL(urlPath, self.location.origin).href;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
+      for (const client of clients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          await client.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow(fullUrl);
+    })
   );
 });
 

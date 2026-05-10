@@ -20,11 +20,44 @@ const {
   logAdminAction,
 } = require('./auth');
 const transactionService = require('./transaction');
+const webpush = require('web-push');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
 /** @type {Map<import('http').ServerResponse, { role: string }>} */
 const sseClients = new Map();
+
+let webPushConfigured = false;
+/** @type {string|null} */
+let cachedVapidPublicKey = null;
+
+function configureWebPushVapid() {
+  const subject = String(process.env.VAPID_SUBJECT || '').trim();
+  let publicKey = process.env.VAPID_PUBLIC_KEY;
+  let privateKey = process.env.VAPID_PRIVATE_KEY;
+
+  if (!publicKey || !privateKey) {
+    const generated = webpush.generateVAPIDKeys();
+    publicKey = generated.publicKey;
+    privateKey = generated.privateKey;
+    console.log('Clefs VAPID generees — definissez VAPID_PUBLIC_KEY et VAPID_PRIVATE_KEY dans Railway :');
+    console.log(`VAPID_PUBLIC_KEY=${publicKey}`);
+    console.log(`VAPID_PRIVATE_KEY=${privateKey}`);
+  }
+
+  cachedVapidPublicKey = publicKey || null;
+
+  if (!subject || !publicKey || !privateKey) {
+    if (!subject) {
+      console.warn('VAPID_SUBJECT non defini (mailto:contact@...). Web Push desactive jusqu a configuration.');
+    }
+    webPushConfigured = false;
+    return;
+  }
+
+  webpush.setVapidDetails(subject, publicKey, privateKey);
+  webPushConfigured = true;
+}
 
 const DEMO_SESSION = {
   data: null,
@@ -252,6 +285,10 @@ function normalizeRole(role) {
   return cleanString(role).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+function normalizeStatutComparable(value) {
+  return cleanString(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 function isAdminRole(role) {
   return normalizeRole(role) === 'admin';
 }
@@ -449,6 +486,70 @@ function pushNotification(notification) {
       }
     }
   }
+
+  dispatchWebPush(notification).catch(err => console.error('Web push erreur:', err));
+}
+
+async function dispatchWebPush(notification) {
+  if (!webPushConfigured) {
+    return;
+  }
+
+  let memberIds;
+
+  const raw = cleanString(notification.destinataires) || 'tous';
+  if (raw.toLowerCase() === 'tous') {
+    const allMembers = await pool.query('SELECT id FROM members');
+    memberIds = allMembers.rows.map((row) => row.id);
+  } else {
+    const targets = raw.split(',').map((segment) => normalizeRole(segment)).filter(Boolean);
+    if (!targets.length) {
+      return;
+    }
+    const res = await pool.query(
+      `SELECT id FROM members
+       WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = ANY($1::text[])`,
+      [targets]
+    );
+    memberIds = res.rows.map((row) => row.id);
+    const admins = await pool.query(
+      `SELECT id FROM members
+       WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = 'admin'`
+    );
+    const merged = new Set(memberIds);
+    admins.rows.forEach((row) => merged.add(row.id));
+    memberIds = Array.from(merged);
+  }
+
+  if (!memberIds.length) {
+    return;
+  }
+
+  const subs = await pool.query(
+    'SELECT id, subscription FROM push_subscriptions WHERE member_id = ANY($1::int[])',
+    [memberIds],
+  );
+
+  const body = JSON.stringify({
+    title: 'CoopLedger',
+    body: notification.message || '',
+    data: {
+      url: '/',
+      type: notification.type || '',
+    },
+    tag: `coop-${notification.id}`,
+  });
+
+  for (const row of subs.rows) {
+    const sub = row.subscription;
+    try {
+      await webpush.sendNotification(sub, body);
+    } catch (err) {
+      if (Number(err.statusCode) === 410 || Number(err.statusCode) === 404) {
+        await pool.query('DELETE FROM push_subscriptions WHERE id = $1', [row.id]);
+      }
+    }
+  }
 }
 
 async function register(req, res) {
@@ -468,13 +569,71 @@ async function register(req, res) {
 
 async function createMemberByAdmin(req, res) {
   await requireAuth(req, res);
-  await requireRoles(req, res, 'admin');
+  await requireRoles(req, res, 'admin', 'secretaire', 'secrétaire');
 
   const body = await readBody(req);
   const member = await createMemberRecord(body);
 
-  await createNotification(`Membre cree par l admin: ${member.nom}`, 'membre', 'secretaire');
+  await createNotification(`Nouveau membre cree par le bureau: ${member.nom}`, 'membre', 'secretaire');
   sendJson(res, 201, { member });
+}
+
+async function updateMemberStatut(req, res, id) {
+  await requireAuth(req, res);
+  await requireRoles(req, res, 'admin', 'secretaire', 'secrétaire');
+
+  const memberId = parsePositiveInteger(id, 'member_id');
+  const { statut } = await readBody(req);
+  const next = cleanString(statut);
+
+  if (!['Actif', 'Inactif'].includes(next)) {
+    throw new HttpError(400, 'statut doit etre Actif ou Inactif.');
+  }
+
+  const updated = await pool.query(
+    `UPDATE members SET statut = $1 WHERE id = $2 RETURNING id, nom, username, role, statut`,
+    [next, memberId],
+  );
+
+  if (updated.rowCount === 0) {
+    throw new HttpError(404, 'Membre introuvable.');
+  }
+
+  await createNotification(`Statut mis a jour (${next}): ${updated.rows[0].nom}`, 'membre', 'secretaire');
+  sendJson(res, 200, { member: updated.rows[0] });
+}
+
+async function getPushPublicKey(req, res) {
+  sendJson(res, 200, { public_key: cachedVapidPublicKey || '' });
+}
+
+async function pushSubscribe(req, res) {
+  await requireAuth(req, res);
+
+  if (!webPushConfigured) {
+    throw new HttpError(503, 'Notifications push non configurees (VAPID_SUBJECT ou clefs manquants).');
+  }
+
+  const body = await readBody(req);
+  const subscription = body.subscription || body;
+
+  if (!subscription || !subscription.endpoint) {
+    throw new HttpError(400, 'subscription invalide.');
+  }
+
+  const memberId = Number(req.user.id);
+  await pool.query(
+    `DELETE FROM push_subscriptions WHERE subscription->>'endpoint' = $1`,
+    [subscription.endpoint],
+  );
+
+  await pool.query(
+    `INSERT INTO push_subscriptions (member_id, subscription)
+     VALUES ($1, $2::jsonb)`,
+    [memberId, subscription],
+  );
+
+  sendJson(res, 201, { success: true });
 }
 
 async function login(req, res) {
@@ -603,12 +762,32 @@ async function getPublicConfig(req, res) {
 
 async function listMembers(req, res) {
   await requireAuth(req, res);
-  const result = await pool.query(
-    `SELECT id, nom, username, email, role, role_expires_at, statut, created_at
-     FROM members
-     ORDER BY created_at DESC`
-  );
-  sendJson(res, 200, { members: result.rows });
+
+  const role = normalizeRole(req.user?.role);
+  if (['membre', 'observateur'].includes(role)) {
+    throw new HttpError(403, 'Acces non autorise.');
+  }
+
+  if (role === 'admin' || role === 'secretaire') {
+    const result = await pool.query(
+      `SELECT m.id, m.nom, m.username, m.email, m.role, m.role_expires_at, m.statut, m.created_at,
+         (SELECT COUNT(*)::int FROM cotisations c WHERE c.member_id = m.id)::int AS cotisations_count
+       FROM members m
+       ORDER BY m.created_at DESC`
+    );
+    return sendJson(res, 200, { members: result.rows });
+  }
+
+  if (['president', 'tresorier', 'tresoriere', 'verificateur'].includes(role)) {
+    const result = await pool.query(
+      `SELECT id, nom, role, statut
+       FROM members
+       ORDER BY created_at DESC`
+    );
+    return sendJson(res, 200, { members: result.rows });
+  }
+
+  throw new HttpError(403, 'Acces non autorise.');
 }
 
 async function updateMemberRole(req, res, id) {
@@ -671,36 +850,113 @@ async function updateMemberRole(req, res, id) {
 
 async function listTransactions(req, res) {
   await requireAuth(req, res);
-  const result = await pool.query('SELECT * FROM transactions ORDER BY date DESC');
-  sendJson(res, 200, { transactions: result.rows });
+
+  const rawUrl = `http://${req.headers.host || 'localhost'}${req.url || ''}`;
+  const url = new URL(rawUrl);
+  const typeFilter = cleanString(url.searchParams.get('type')).toLowerCase();
+  const statutFilter = cleanString(url.searchParams.get('statut')).toLowerCase();
+  const dateFrom = cleanString(url.searchParams.get('date_from'));
+  const dateTo = cleanString(url.searchParams.get('date_to'));
+
+  const txResult = await pool.query('SELECT * FROM transactions ORDER BY date DESC');
+  const cotResult = await pool.query(
+    `SELECT
+       ('cot_' || id::text) AS id,
+       date,
+       ('Cotisation (' || mode || ')') AS libelle,
+       montant,
+       hash,
+       explorer,
+       statut,
+       member_id,
+       NULL::integer AS vote_id
+     FROM cotisations
+     WHERE hash IS NOT NULL AND hash <> ''`
+  );
+
+  const rows = [];
+
+  for (const row of txResult.rows) {
+    const inferredType = row.type
+      || (Number(row.montant) < 0 ? 'depense' : 'recette');
+    rows.push({ ...row, type: inferredType, source: 'transaction' });
+  }
+
+  for (const row of cotResult.rows) {
+    rows.push({
+      ...row,
+      type: 'cotisation',
+      source: 'cotisation',
+    });
+  }
+
+  rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  const filtered = rows.filter((row) => {
+    if (typeFilter && typeFilter !== 'tous' && cleanString(row.type).toLowerCase() !== typeFilter) {
+      return false;
+    }
+    if (statutFilter && normalizeStatutComparable(row.statut) !== normalizeStatutComparable(statutFilter)) {
+      return false;
+    }
+    if (dateFrom) {
+      const t = new Date(row.date).getTime();
+      if (t < new Date(dateFrom).setHours(0, 0, 0, 0)) {
+        return false;
+      }
+    }
+    if (dateTo) {
+      const t = new Date(row.date).getTime();
+      if (t > new Date(dateTo).setHours(23, 59, 59, 999)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  sendJson(res, 200, { transactions: filtered });
 }
 
 async function createTransaction(req, res) {
   await requireAuth(req, res);
   await requireRoles(req, res, 'tresorier', 'trésorier');
 
-  const { libelle, montant, member_id, vote_id } = await readBody(req);
+  const { libelle, montant, member_id, vote_id, type } = await readBody(req);
   const cleanLibelle = cleanString(libelle);
-  const amount = parseNonZeroInteger(montant, 'montant');
+  const txType = cleanString(type).toLowerCase() || 'recette';
   const voteId = parsePositiveInteger(vote_id, 'vote_id');
 
   if (!cleanLibelle) {
     throw new HttpError(400, 'libelle est obligatoire.');
   }
 
+  if (!['recette', 'depense'].includes(txType)) {
+    throw new HttpError(400, 'type doit etre recette ou depense.');
+  }
+
+  const amountAbs = parseNonZeroInteger(montant, 'montant');
+  const amount = txType === 'depense' ? -Math.abs(amountAbs) : Math.abs(amountAbs);
+
   const vote = await pool.query('SELECT * FROM votes WHERE id = $1', [voteId]);
   if (!vote.rows[0] || vote.rows[0].statut !== 'validé') {
     throw new HttpError(400, 'Le vote associe doit etre valide.');
   }
 
-  const hash = await transactionService.enregistrerTransaction(cleanLibelle, amount);
+  let stellar;
+  try {
+    stellar = await transactionService.enregistrerTransaction(cleanLibelle, amount);
+  } catch (err) {
+    console.error(err);
+    throw new HttpError(502, 'Echec du scellement Stellar.');
+  }
+
+  const { hash, explorer } = stellar;
   const id = `tx_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-  const explorer = `https://stellar.expert/explorer/testnet/tx/${hash}`;
   const result = await pool.query(
-    `INSERT INTO transactions (id, libelle, montant, hash, explorer, member_id, vote_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO transactions (id, libelle, montant, type, hash, explorer, member_id, vote_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
-    [id, cleanLibelle, amount, hash, explorer, member_id || null, voteId]
+    [id, cleanLibelle, amount, txType, hash, explorer, member_id || null, voteId]
   );
 
   await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tresorier,verificateur');
@@ -844,11 +1100,50 @@ async function castVote(req, res, id) {
   sendJson(res, 201, { success: true });
 }
 
-async function closeVote(req, res, id) {
-  if (!req.user) {
+async function prolongVote(req, res, id) {
+  await requireAuth(req, res);
+
+  const callerRole = normalizeRole(req.user?.role);
+  if (callerRole !== 'admin') {
+    throw new HttpError(403, 'Acces non autorise.');
+  }
+
+  const { nouvelle_duree_heures } = await readBody(req);
+  const hours = parsePositiveInteger(nouvelle_duree_heures, 'nouvelle_duree_heures');
+
+  const result = await pool.query('SELECT * FROM votes WHERE id = $1', [id]);
+  const vote = result.rows[0];
+
+  if (!vote) {
+    throw new HttpError(404, 'Vote introuvable.');
+  }
+
+  if (vote.statut !== 'ouvert') {
+    throw new HttpError(400, 'Ce vote nest pas ouvert.');
+  }
+
+  const expiryMs = vote.expires_at ? new Date(vote.expires_at).getTime() : Date.now();
+  const baseMs = Math.max(Date.now(), expiryMs);
+  const expiresAt = new Date(baseMs + hours * 60 * 60 * 1000);
+  const newDuration = Number(vote.duree_heures || 72) + hours;
+
+  const updated = await pool.query(
+    `UPDATE votes SET expires_at = $1, duree_heures = $2 WHERE id = $3 RETURNING *`,
+    [expiresAt, newDuration, id],
+  );
+
+  await createNotification(`Vote prolonge (${hours}h): ${vote.titre}`, 'vote', 'tous');
+  sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
+}
+
+async function closeVote(req, res, id, automatedElectionClose = false) {
+  if (!automatedElectionClose) {
     await requireAuth(req, res);
   }
-  const isCallerAdmin = normalizeRole(req.user?.role) === 'admin';
+
+  const callerRole = normalizeRole(req.user?.role);
+  const isCallerAdmin = callerRole === 'admin';
+  const isBureauCloser = ['president', 'tresorier'].includes(callerRole);
 
   const result = await pool.query('SELECT * FROM votes WHERE id = $1', [id]);
   const vote = result.rows[0];
@@ -861,8 +1156,16 @@ async function closeVote(req, res, id) {
     throw new HttpError(400, 'Ce vote est deja ferme.');
   }
 
-  if (!isCallerAdmin && vote.expires_at && new Date(vote.expires_at).getTime() > Date.now()) {
-    throw new HttpError(400, 'Ce vote n est pas encore expire.');
+  if (!automatedElectionClose) {
+    if (!isCallerAdmin) {
+      if (!isBureauCloser) {
+        throw new HttpError(403, 'Acces non autorise pour la cloture manuelle.');
+      }
+      const expired = !vote.expires_at || new Date(vote.expires_at).getTime() <= Date.now();
+      if (!expired) {
+        throw new HttpError(400, 'Ce vote n est pas encore expire.');
+      }
+    }
   }
 
   if (vote.type === 'election') {
@@ -959,23 +1262,46 @@ async function closeVote(req, res, id) {
 
 async function cancelVote(req, res, id) {
   await requireAuth(req, res);
-  await requireRoles(req, res, 'admin');
 
   const existing = await pool.query('SELECT * FROM votes WHERE id = $1', [id]);
-  if (existing.rowCount === 0) {
+  if (!existing.rows[0]) {
     throw new HttpError(404, 'Vote introuvable.');
   }
 
+  const vote = existing.rows[0];
+  const callerRole = normalizeRole(req.user.role);
+  let allowed = false;
+
+  if (callerRole === 'admin') {
+    allowed = true;
+  } else if (callerRole === 'president') {
+    if (vote.type === 'election') {
+      allowed = false;
+    } else if (
+      vote.statut === 'ouvert'
+      && Number(vote.propose_par || 0) === Number(req.user.id)
+      && Number(vote.pour || 0) === 0
+      && Number(vote.contre || 0) === 0
+    ) {
+      allowed = true;
+    }
+  }
+
+  if (!allowed) {
+    throw new HttpError(403, 'Acces non autorise pour cette annulation.');
+  }
+
   const updated = await pool.query(
-    `UPDATE votes
-     SET statut = $1
-     WHERE id = $2
-     RETURNING *`,
-    ['annulé', id]
+    `UPDATE votes SET statut = $1 WHERE id = $2 RETURNING *`,
+    ['annulé', id],
   );
 
-  await createNotification('Vote annulé par l administrateur', 'vote', 'tous');
-  await logAdminAction(`Vote ${id} annule`, getRequestIp(req));
+  const label = callerRole === 'admin' ? 'Vote annule par la direction' : 'Proposition retiree par le president';
+  await createNotification(`${label}`, 'vote', 'tous');
+  if (callerRole === 'admin') {
+    await logAdminAction(`Vote ${id} annule`, getRequestIp(req));
+  }
+
   sendJson(res, 200, { vote: serializeVote(updated.rows[0]) });
 }
 
@@ -1019,11 +1345,23 @@ async function createCotisation(req, res) {
     throw new HttpError(400, 'mode est obligatoire.');
   }
 
+  const memberRes = await pool.query('SELECT nom FROM members WHERE id = $1', [memberId]);
+  const nomMembre = cleanString(memberRes.rows[0]?.nom) || `membre_${memberId}`;
+  const libelleStellar = `Cotisation_${nomMembre.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}_${memberId}`;
+
+  let stellar;
+  try {
+    stellar = await transactionService.enregistrerTransaction(libelleStellar, amount);
+  } catch (err) {
+    console.error(err);
+    throw new HttpError(502, 'Echec du scellement Stellar.');
+  }
+
   const result = await pool.query(
-    `INSERT INTO cotisations (member_id, montant, mode)
-     VALUES ($1, $2, $3)
+    `INSERT INTO cotisations (member_id, montant, mode, hash, explorer)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [memberId, amount, cleanMode]
+    [memberId, amount, cleanMode, stellar.hash, stellar.explorer]
   );
 
   await createNotification('Cotisation enregistree.', 'cotisation', 'tresorier');
@@ -1299,11 +1637,24 @@ async function fedapayWebhook(req, res) {
 
   const memberId = parsePositiveInteger(payload.member_id || payload.metadata?.member_id, 'member_id');
   const amount = parsePositiveInteger(payload.montant || payload.amount || payload.transaction?.amount, 'montant');
+
+  const memberRes = await pool.query('SELECT nom FROM members WHERE id = $1', [memberId]);
+  const nomMembre = cleanString(memberRes.rows[0]?.nom) || `membre_${memberId}`;
+  const libelleStellar = `Cotisation_FedaPay_${nomMembre.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}_${memberId}`;
+
+  let stellar;
+  try {
+    stellar = await transactionService.enregistrerTransaction(libelleStellar, amount);
+  } catch (err) {
+    console.error(err);
+    throw new HttpError(502, 'Echec du scellement Stellar.');
+  }
+
   const result = await pool.query(
-    `INSERT INTO cotisations (member_id, montant, mode, statut)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO cotisations (member_id, montant, mode, statut, hash, explorer)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [memberId, amount, 'FedaPay', 'confirmé']
+    [memberId, amount, 'FedaPay', 'confirmé', stellar.hash, stellar.explorer]
   );
 
   await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier');
@@ -1513,6 +1864,41 @@ async function healthScore(req, res) {
   });
 }
 
+async function verifierMembresInactifs() {
+  const cfg = await pool.query('SELECT valeur FROM config WHERE cle = $1', ['duree_inactivite_mois']);
+  const months = Math.max(1, Number(cfg.rows[0]?.valeur || 3));
+
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - months);
+
+  const res = await pool.query(
+    `WITH last_activity AS (
+       SELECT m.id,
+         GREATEST(
+           COALESCE((SELECT MAX(vr.created_at) FROM vote_results vr WHERE vr.member_id = m.id), '1970-01-01'::timestamp),
+           COALESCE((SELECT MAX(c.date) FROM cotisations c WHERE c.member_id = m.id), '1970-01-01'::timestamp)
+         ) AS last_seen
+       FROM members m
+       WHERE m.statut = 'Actif'
+     )
+     SELECT id FROM last_activity WHERE last_seen < $1`,
+    [cutoff],
+  );
+
+  const ids = res.rows.map((row) => row.id).filter(Number.isFinite);
+
+  if (!ids.length) {
+    return;
+  }
+
+  await pool.query(`UPDATE members SET statut = 'Inactif' WHERE id = ANY($1::int[])`, [ids]);
+  await createNotification(
+    `${ids.length} membres mis en inactif automatiquement.`,
+    'membre',
+    'secretaire',
+  );
+}
+
 async function verifierElectionsAutomatiques() {
   const activeMembers = await countActiveMembers();
 
@@ -1558,19 +1944,28 @@ async function verifierElectionsAutomatiques() {
        AND expires_at <= NOW()`
   );
 
+  const silentCloseRes = {
+    writableEnded: false,
+    writeHead() {},
+    end() {
+      silentCloseRes.writableEnded = true;
+    },
+  };
+
   for (const vote of expiredElectionVotes.rows) {
-    const fakeReq = { headers: {}, user: { id: 0, role: 'admin' } };
-    const fakeRes = { writableEnded: false };
-    fakeRes.writeHead = () => {};
-    fakeRes.end = () => { fakeRes.writableEnded = true; };
-    await closeVote(fakeReq, fakeRes, vote.id);
+    silentCloseRes.writableEnded = false;
+    const autoReq = { headers: {}, user: { id: 0, role: 'admin' } };
+    await closeVote(autoReq, silentCloseRes, vote.id, true);
   }
 }
 
 function planifierElectionsAutomatiques() {
   verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
+  verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
+
   return setInterval(() => {
     verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
+    verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
   }, 60 * 60 * 1000);
 }
 
@@ -1579,17 +1974,17 @@ function buildDemoDataset() {
   const iso = (t) => new Date(t).toISOString();
 
   const members = [
-    { id: 1, nom: 'Aminata Diallo', username: 'aminata_d', email: 'a@demo.coop', role: 'president', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
-    { id: 2, nom: 'Jean Kouassi', username: 'jean_k', email: 'j@demo.coop', role: 'tresorier', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
-    { id: 3, nom: 'Fatou NGuessan', username: 'fatou_n', email: 'f@demo.coop', role: 'secretaire', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
-    { id: 4, nom: 'Koffi Mensah', username: 'koffi_m', email: 'k@demo.coop', role: 'verificateur', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
-    { id: 5, nom: 'Awa Bamba', username: 'awa_b', email: 'aw@demo.coop', role: 'membre', role_expires_at: null, statut: 'Actif', created_at: iso(now) },
+    { id: 1, nom: 'Aminata Diallo', username: 'aminata_d', email: 'a@demo.coop', role: 'president', role_expires_at: null, statut: 'Actif', created_at: iso(now), cotisations_count: 0 },
+    { id: 2, nom: 'Jean Kouassi', username: 'jean_k', email: 'j@demo.coop', role: 'tresorier', role_expires_at: null, statut: 'Actif', created_at: iso(now), cotisations_count: 0 },
+    { id: 3, nom: 'Fatou NGuessan', username: 'fatou_n', email: 'f@demo.coop', role: 'secretaire', role_expires_at: null, statut: 'Actif', created_at: iso(now), cotisations_count: 0 },
+    { id: 4, nom: 'Koffi Mensah', username: 'koffi_m', email: 'k@demo.coop', role: 'verificateur', role_expires_at: null, statut: 'Actif', created_at: iso(now), cotisations_count: 0 },
+    { id: 5, nom: 'Awa Bamba', username: 'awa_b', email: 'aw@demo.coop', role: 'membre', role_expires_at: null, statut: 'Actif', created_at: iso(now), cotisations_count: 1 },
   ];
 
   const transactions = [
-    { id: 'tx_demo_1', date: iso(now - 86400000), libelle: 'Vente recolte', montant: 450000, hash: 'demo_hash_aaaa', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 1, vote_id: null },
-    { id: 'tx_demo_2', date: iso(now - 172800000), libelle: 'Achat engrais', montant: -120000, hash: 'demo_hash_bbbb', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 2, vote_id: null },
-    { id: 'tx_demo_3', date: iso(now - 3600000), libelle: 'Cotisations mensuelles', montant: 80000, hash: 'demo_hash_cccc', explorer: 'https://stellar.expert/explorer/testnet', statut: 'scellé', member_id: 3, vote_id: null },
+    { id: 'tx_demo_1', date: iso(now - 86400000), libelle: 'Vente recolte', montant: 450000, type: 'recette', hash: 'demo_hash_aaaa', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_aaaa', statut: 'scellé', member_id: 1, vote_id: null, source: 'transaction' },
+    { id: 'tx_demo_2', date: iso(now - 172800000), libelle: 'Achat engrais', montant: -120000, type: 'depense', hash: 'demo_hash_bbbb', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_bbbb', statut: 'scellé', member_id: 2, vote_id: null, source: 'transaction' },
+    { id: 'tx_demo_3', date: iso(now - 3600000), libelle: 'Apport coopératif démo', montant: 80000, type: 'recette', hash: 'demo_hash_cccc', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_cccc', statut: 'scellé', member_id: 3, vote_id: null, source: 'transaction' },
   ];
 
   const expires = new Date(now + 72 * 3600000);
@@ -1672,7 +2067,16 @@ function buildDemoDataset() {
     candidatures: [posteVacant],
     notifications,
     cotisations: [
-      { id: 1, member_id: 5, montant: 5000, mode: 'especes', statut: 'confirmé', date: iso(now - 86400000) },
+      {
+        id: 1,
+        member_id: 5,
+        montant: 5000,
+        mode: 'Cash',
+        statut: 'confirmé',
+        date: iso(now - 86400000),
+        hash: 'demo_hash_cot1',
+        explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_cot1',
+      },
     ],
   };
 }
@@ -1743,8 +2147,34 @@ async function routeDemoApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/members') {
     return sendJson(res, 200, { members: store.members });
   }
-  if (req.method === 'GET' && pathname === '/api/transactions') {
-    return sendJson(res, 200, { transactions: store.transactions });
+  if (req.method === 'GET' && pathname.startsWith('/api/transactions')) {
+    const cotLedger = (store.cotisations || []).filter((row) => cleanString(row.hash)).map((row) => ({
+      id: `cot_${row.id}`,
+      date: row.date,
+      libelle: `Cotisation (${row.mode})`,
+      montant: row.montant,
+      type: 'cotisation',
+      hash: row.hash,
+      explorer: row.explorer || '',
+      statut: row.statut,
+      member_id: row.member_id,
+      vote_id: null,
+      source: 'cotisation',
+    }));
+    const merged = [...store.transactions.map((tx) => ({ ...tx, source: tx.source || 'transaction' })), ...cotLedger]
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    const url = new URL(req.url || '/api/transactions', 'http://localhost');
+    let rows = merged;
+    const typeFilter = cleanString(url.searchParams.get('type')).toLowerCase();
+    const statutFilter = cleanString(url.searchParams.get('statut')).toLowerCase();
+    if (typeFilter && typeFilter !== 'tous') {
+      rows = rows.filter((row) => cleanString(row.type || (Number(row.montant) < 0 ? 'depense' : 'recette')).toLowerCase() === typeFilter);
+    }
+    if (statutFilter) {
+      rows = rows.filter((row) => cleanString(row.statut).toLowerCase() === statutFilter);
+    }
+    return sendJson(res, 200, { transactions: rows });
   }
   if (req.method === 'GET' && pathname === '/api/votes') {
     return sendJson(res, 200, { votes: store.votes.map(serializeVote) });
@@ -1769,6 +2199,9 @@ async function routeDemoApi(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/fedapay/public-key') {
     return sendJson(res, 200, { public_key: 'demo_public_key' });
+  }
+  if (req.method === 'GET' && pathname === '/api/push/public-key') {
+    return sendJson(res, 200, { public_key: '' });
   }
   if (req.method === 'POST' && pathname === '/api/fedapay/initier') {
     return sendJson(res, 502, { error: 'Paiement temporairement indisponible' });
@@ -1838,12 +2271,25 @@ async function routeApi(req, res, pathname) {
     return annulerCandidatureElection(req, res, Number(candidatureAnnulerMatch[1]));
   }
 
+  const voteProlongMatch = pathname.match(/^\/api\/votes\/(\d+)\/prolong$/);
+  if (req.method === 'POST' && voteProlongMatch) {
+    return prolongVote(req, res, Number(voteProlongMatch[1]));
+  }
+
   const voteActionMatch = pathname.match(/^\/api\/votes\/(\d+)\/(vote|close|annuler)$/);
   if (voteActionMatch && req.method === 'POST') {
     if (voteActionMatch[2] === 'vote') return castVote(req, res, Number(voteActionMatch[1]));
     if (voteActionMatch[2] === 'close') return closeVote(req, res, Number(voteActionMatch[1]));
     return cancelVote(req, res, Number(voteActionMatch[1]));
   }
+
+  const memberStatMatch = pathname.match(/^\/api\/members\/(\d+)\/statut$/);
+  if (req.method === 'POST' && memberStatMatch) {
+    return updateMemberStatut(req, res, Number(memberStatMatch[1]));
+  }
+
+  if (req.method === 'GET' && pathname === '/api/push/public-key') return getPushPublicKey(req, res);
+  if (req.method === 'POST' && pathname === '/api/push/subscribe') return pushSubscribe(req, res);
 
   if (req.method === 'POST' && pathname === '/api/cotisations') return createCotisation(req, res);
   if (req.method === 'POST' && pathname === '/api/fedapay/initier') return initierFedapay(req, res);
@@ -1885,6 +2331,8 @@ const httpServer = http.createServer(async (req, res) => {
     }
   }
 });
+
+configureWebPushVapid();
 
 httpServer.listen(PORT, () => {
   console.log(`CoopLedger en ligne sur le port ${PORT}`);
