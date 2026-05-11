@@ -70,8 +70,9 @@
   </section>
 
   <div id="app-shell" class="app-shell hidden">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
     <!-- SIDEBAR -->
-    <div class="sidebar">
+    <aside id="app-sidebar" class="sidebar" aria-label="Navigation principale">
       <div class="logo">
         <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
       </div>
@@ -95,10 +96,16 @@
         <p id="sidebar-coop-location"></p>
         <p id="sidebar-members-count">-</p>
       </div>
-    </div>
+    </aside>
 
     <!-- CONTENU PRINCIPAL -->
     <div class="main-content">
+      <header class="mobile-nav-header">
+        <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar"
+          aria-expanded="false" aria-label="Ouvrir le menu">
+          <span class="sidebar-toggle-bars" aria-hidden="true"></span>
+        </button>
+      </header>
       <div id="demo-mode-banner" class="demo-mode-banner hidden" role="status">
         MODE DÉMONSTRATION — données fictives
       </div>
@@ -295,17 +302,18 @@
         </div>
       </div>
     </div>
+  </div>
 
-    <script src="js/app.js"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(error => {
-            console.error('Service Worker registration failed:', error);
-          });
+  <script src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(error => {
+          console.error('Service Worker registration failed:', error);
         });
-      }
-    </script>
+      });
+    }
+  </script>
 </body>
 
 </html>
