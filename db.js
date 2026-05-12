@@ -132,6 +132,16 @@ async function initDatabase() {
       ip VARCHAR(50)
     );
 
+    CREATE TABLE IF NOT EXISTS rapports (
+      id SERIAL PRIMARY KEY,
+      mois VARCHAR(7) NOT NULL,
+      data JSONB NOT NULL,
+      genere_par VARCHAR(50) DEFAULT 'auto',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS rapports_created_at_idx ON rapports (created_at DESC);
+
     CREATE TABLE IF NOT EXISTS actions_votees (
       id SERIAL PRIMARY KEY,
       vote_id INTEGER REFERENCES votes(id) UNIQUE,

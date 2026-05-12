@@ -2023,10 +2023,7 @@ async function getFedapayPublicKey(req, res) {
   sendJson(res, 200, { public_key: key });
 }
 
-async function monthlyReport(req, res) {
-  await requireAuth(req, res);
-  await requireRoles(req, res, 'president', 'président', 'tresorier', 'trésorier', 'verificateur', 'vérificateur');
-
+async function computeMonthlyReport() {
   const result = await pool.query(`
     SELECT
       COALESCE(SUM(CASE WHEN montant > 0 THEN montant ELSE 0 END), 0)::int AS total_entrees,
@@ -2041,10 +2038,70 @@ async function monthlyReport(req, res) {
     WHERE date >= date_trunc('month', NOW())
   `);
 
-  sendJson(res, 200, {
-    mois: new Date().toISOString().slice(0, 7),
+  return {
     ...result.rows[0],
     ...cotisations.rows[0],
+  };
+}
+
+async function saveReport(data, generePar) {
+  const mois = new Date().toISOString().slice(0, 7);
+  const raw = generePar != null ? cleanString(String(generePar)) : '';
+  const label = raw || 'auto';
+  const result = await pool.query(
+    `INSERT INTO rapports (mois, data, genere_par)
+     VALUES ($1, $2::jsonb, $3)
+     RETURNING id, mois, data, genere_par, created_at`,
+    [mois, JSON.stringify(data), label],
+  );
+  return result.rows[0];
+}
+
+async function monthlyReport(req, res) {
+  await requireAuth(req, res);
+
+  const result = await pool.query(
+    `SELECT data, mois, genere_par, created_at FROM rapports ORDER BY created_at DESC LIMIT 1`,
+  );
+
+  if (result.rowCount === 0) {
+    sendJson(res, 200, { rapport: null });
+    return;
+  }
+
+  const row = result.rows[0];
+  sendJson(res, 200, {
+    rapport: row.data,
+    mois: row.mois,
+    genere_par: row.genere_par,
+    created_at: row.created_at,
+  });
+}
+
+async function genererRapport(req, res) {
+  await requireAuth(req, res);
+  await requireRoles(
+    req,
+    res,
+    'admin',
+    'president',
+    'président',
+    'tresorier',
+    'trésorier',
+    'verificateur',
+    'vérificateur',
+  );
+
+  const data = await computeMonthlyReport();
+  const row = await saveReport(data, req.user.role);
+
+  await createNotification('Nouveau rapport généré', 'rapport', 'tous');
+
+  sendJson(res, 201, {
+    rapport: row.data,
+    mois: row.mois,
+    genere_par: row.genere_par,
+    created_at: row.created_at,
   });
 }
 
@@ -2275,15 +2332,37 @@ async function verifierElectionsAutomatiques() {
   }
 }
 
+async function maybeAutoGenerateMonthlyReport() {
+  const now = new Date();
+  if (now.getDate() !== 1) {
+    return;
+  }
+
+  const mois = now.toISOString().slice(0, 7);
+  const exists = await pool.query(
+    `SELECT 1 FROM rapports WHERE mois = $1 AND genere_par = $2 LIMIT 1`,
+    [mois, 'auto'],
+  );
+
+  if (exists.rowCount > 0) {
+    return;
+  }
+
+  const data = await computeMonthlyReport();
+  await saveReport(data, 'auto');
+}
+
 function planifierElectionsAutomatiques() {
   verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
   verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
   rappelerActionsVoteesEnAttente().catch(err => console.error('Erreur rappels actions votees:', err));
+  maybeAutoGenerateMonthlyReport().catch(err => console.error('Erreur rapport mensuel automatique:', err));
 
   return setInterval(() => {
     verifierElectionsAutomatiques().catch(err => console.error('Erreur verification elections:', err));
     verifierMembresInactifs().catch(err => console.error('Erreur verification inactivite:', err));
     rappelerActionsVoteesEnAttente().catch(err => console.error('Erreur rappels actions votees:', err));
+    maybeAutoGenerateMonthlyReport().catch(err => console.error('Erreur rapport mensuel automatique:', err));
   }, 60 * 60 * 1000);
 }
 
@@ -2384,6 +2463,7 @@ function buildDemoDataset() {
     votes,
     candidatures: [posteVacant],
     notifications,
+    lastGeneratedReport: null,
     cotisations: [
       {
         id: 1,
@@ -2438,14 +2518,15 @@ async function demoHealthScore(req, res) {
 
 async function demoMonthlyReport(req, res) {
   await requireAuth(req, res);
-  sendJson(res, 200, {
-    mois: new Date().toISOString().slice(0, 7),
-    total_entrees: 530000,
-    total_sorties: -120000,
-    nombre_transactions: 3,
-    total_cotisations: 5000,
-    nombre_cotisations: 1,
-  });
+  const store = DEMO_SESSION.data;
+  if (!store) {
+    throw new HttpError(400, 'Session demo non initialisee. Appelez POST /api/demo/start.');
+  }
+  if (!store.lastGeneratedReport) {
+    sendJson(res, 200, { rapport: null });
+    return;
+  }
+  sendJson(res, 200, store.lastGeneratedReport);
 }
 
 async function routeDemoApi(req, res, pathname) {
@@ -2527,6 +2608,46 @@ async function routeDemoApi(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/rapport/mensuel') {
     return demoMonthlyReport(req, res);
+  }
+  if (req.method === 'POST' && pathname === '/api/rapport/generer') {
+    await requireRoles(
+      req,
+      res,
+      'admin',
+      'president',
+      'président',
+      'tresorier',
+      'trésorier',
+      'verificateur',
+      'vérificateur',
+    );
+    if (res.writableEnded) {
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    const mois = createdAt.slice(0, 7);
+    const rapport = {
+      total_entrees: 530000,
+      total_sorties: -120000,
+      nombre_transactions: 3,
+      total_cotisations: 5000,
+      nombre_cotisations: 1,
+    };
+    const payload = {
+      rapport,
+      mois,
+      genere_par: cleanString(req.user?.role) || 'demo',
+      created_at: createdAt,
+    };
+    store.lastGeneratedReport = payload;
+    store.notifications.unshift({
+      id: `r_${Date.now()}`,
+      message: 'Nouveau rapport généré',
+      type: 'rapport',
+      destinataires: 'tous',
+      created_at: createdAt,
+    });
+    return sendJson(res, 201, payload);
   }
   if (req.method === 'GET' && pathname === '/api/fedapay/public-key') {
     return sendJson(res, 200, { public_key: 'demo_public_key' });
@@ -2647,6 +2768,7 @@ async function routeApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/notifications') return listNotifications(req, res);
   if (req.method === 'GET' && pathname === '/api/actions-votees') return listActionsVotees(req, res);
   if (req.method === 'GET' && pathname === '/api/rapport/mensuel') return monthlyReport(req, res);
+  if (req.method === 'POST' && pathname === '/api/rapport/generer') return genererRapport(req, res);
   if (req.method === 'GET' && pathname === '/api/sante') return healthScore(req, res);
 
   throw new HttpError(404, 'Route API introuvable.');
