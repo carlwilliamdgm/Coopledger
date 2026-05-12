@@ -1208,9 +1208,79 @@ table td {
   font-size: 12px;
 }
 
+.paiement-retour-view {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(10, 12, 22, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+[data-theme="light"] .paiement-retour-view {
+  background: rgba(248, 249, 252, 0.85);
+}
+
+.paiement-retour-card {
+  max-width: 400px;
+  width: 100%;
+  padding: 28px 24px;
+  border-radius: 16px;
+  background: var(--cl-panel, #1a1d2e);
+  border: 1px solid var(--cl-border, #2d314a);
+  text-align: center;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+}
+
+.paiement-retour-spinner {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  border: 3px solid var(--cl-border, #2d314a);
+  border-top-color: var(--cl-accent, #6ea8fe);
+  animation: paiement-retour-spin 0.85s linear infinite;
+}
+
+@keyframes paiement-retour-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.paiement-retour-msg-main {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: var(--cl-text, #e8eaf4);
+}
+
+.paiement-retour-msg-sub {
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+  color: var(--cl-muted, #8b8fa8);
+}
+
+.fedapay-pay-error {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #f87171;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .settings-backdrop,
   .settings-panel {
     transition: none;
+  }
+
+  .paiement-retour-spinner {
+    animation: none;
+    border-top-color: var(--cl-border, #2d314a);
+    opacity: 0.7;
   }
 }

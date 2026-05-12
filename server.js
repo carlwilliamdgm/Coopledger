@@ -481,7 +481,10 @@ async function createMemberRecord({ nom, username, email, password, role = 'memb
 }
 
 function serveStatic(req, res, pathname) {
-  const requestedPath = pathname === '/' ? '/index.html' : pathname;
+  const normalizedPath = pathname.replace(/\/$/, '') || '/';
+  const requestedPath = normalizedPath === '/' || normalizedPath === '/paiement-retour'
+    ? '/index.html'
+    : pathname;
   const filePath = path.normalize(path.join(PUBLIC_DIR, requestedPath));
 
   if (!filePath.startsWith(PUBLIC_DIR)) {
@@ -1536,8 +1539,8 @@ async function initierFedapay(req, res) {
   const baseUrl = cleanString(process.env.PUBLIC_BASE_URL).replace(/\/$/, '');
   const proto = cleanString(req.headers['x-forwarded-proto']).split(',')[0] || 'http';
   const callbackUrl = baseUrl
-    ? `${baseUrl}/api/cotisations/webhook`
-    : `${proto}://${req.headers.host}/api/cotisations/webhook`;
+    ? `${baseUrl}/paiement-retour`
+    : `${proto}://${req.headers.host}/paiement-retour`;
 
   const response = await postJson(FEDAPAY_TRANSACTION_ENDPOINT, {
     description: 'Cotisation CoopLedger',
@@ -1903,7 +1906,7 @@ async function fedapayWebhook(req, res) {
     [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
   );
 
-  await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier');
+  await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tous');
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 

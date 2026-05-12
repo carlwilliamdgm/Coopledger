@@ -11,8 +11,9 @@ let financialHealth = null;
 let coopConfig = null;
 let sseAbortController = null;
 let sseReconnectTimer = null;
-let fedapayPublicKey = null;
 let initialSetupKey = null;
+let paiementRetourAwaitingSse = false;
+let paiementRetourRedirectTimer = null;
 let demoSessionTimer = null;
 
 const TOKEN_KEY = 'token';
@@ -42,6 +43,57 @@ function getActiveShellPageId() {
   const active = document.querySelector('.page.active');
   if (!active?.id || !active.id.startsWith('page-')) return null;
   return active.id.slice('page-'.length);
+}
+
+function isPaiementRetourShellRoute() {
+  if (window.location.hash === '#paiement-retour') return true;
+  const path = String(window.location.pathname || '').replace(/\/$/, '') || '/';
+  if (path !== '/paiement-retour') return false;
+  const h = String(window.location.hash || '');
+  if (h && h !== '#paiement-retour') return false;
+  return true;
+}
+
+function resetPaiementRetourViewDom() {
+  const progress = document.getElementById('paiement-retour-progress');
+  const success = document.getElementById('paiement-retour-success');
+  progress?.classList.remove('hidden');
+  success?.classList.add('hidden');
+}
+
+function showPaiementRetourView() {
+  const root = document.getElementById('paiement-retour-view');
+  if (!root) return;
+  clearTimeout(paiementRetourRedirectTimer);
+  paiementRetourRedirectTimer = null;
+  paiementRetourAwaitingSse = true;
+  resetPaiementRetourViewDom();
+  root.classList.remove('hidden');
+}
+
+function hidePaiementRetourView() {
+  const root = document.getElementById('paiement-retour-view');
+  if (!root) return;
+  clearTimeout(paiementRetourRedirectTimer);
+  paiementRetourRedirectTimer = null;
+  paiementRetourAwaitingSse = false;
+  root.classList.add('hidden');
+  resetPaiementRetourViewDom();
+}
+
+function onPaiementRetourCotisationNotification(notification) {
+  if (!paiementRetourAwaitingSse) return;
+  if (notification.type !== 'cotisation') return;
+
+  paiementRetourAwaitingSse = false;
+  document.getElementById('paiement-retour-progress')?.classList.add('hidden');
+  document.getElementById('paiement-retour-success')?.classList.remove('hidden');
+
+  paiementRetourRedirectTimer = setTimeout(() => {
+    paiementRetourRedirectTimer = null;
+    hidePaiementRetourView();
+    window.location.href = `${window.location.origin}/#cotisations`;
+  }, 3000);
 }
 
 /** @type {MediaQueryList|null} */
@@ -694,6 +746,7 @@ async function apiFetch(url, options = {}) {
 }
 
 function handleAuthExpired() {
+  hidePaiementRetourView();
   clearSession();
   stopNotificationsStream();
   document.getElementById('app-shell')?.classList.add('hidden');
@@ -757,6 +810,12 @@ async function startAfterLogin() {
       showPage('setup-config');
       return;
     }
+  }
+
+  if (isPaiementRetourShellRoute()) {
+    showPaiementRetourView();
+    loadProtectedData();
+    return;
   }
 
   const initialPage = parseShellRouteFromHash() || 'dashboard';
@@ -850,6 +909,11 @@ function installShellHashRouting() {
     if (document.getElementById('auth-screen') && !document.getElementById('auth-screen').classList.contains('hidden')) {
       return;
     }
+    if (isPaiementRetourShellRoute()) {
+      showPaiementRetourView();
+      return;
+    }
+    hidePaiementRetourView();
     const id = parseShellRouteFromHash() || 'dashboard';
     if (getActiveShellPageId() === id) return;
     showPage(id, null, { updateHash: false });
@@ -1125,6 +1189,7 @@ function installCotisationsPage() {
           <label for="fedapay-amount">Montant (FCFA)</label>
           <input id="fedapay-amount" type="number" min="1" placeholder="5000" />
           <button id="fedapay-btn" class="btn-primary" type="button" onclick="initierPaiementFedapay()">Payer</button>
+          <p id="fedapay-pay-error" class="fedapay-pay-error hidden" role="alert"></p>
         </div>
       </div>
       <form id="manual-cotisation-form" class="login-panel hidden" onsubmit="enregistrerCotisationManuelle(event)">
@@ -1217,6 +1282,7 @@ async function enregistrerProfil(event) {
 
 function deconnecter() {
   closeMobileSidebar();
+  hidePaiementRetourView();
   clearSession();
   stopNotificationsStream();
   document.getElementById('app-shell').classList.add('hidden');
@@ -2560,10 +2626,31 @@ async function enregistrerCotisationManuelle(event) {
 async function initierPaiementFedapay(event) {
   if (event?.preventDefault) event.preventDefault();
   const amount = Number(document.getElementById('fedapay-amount')?.value || 0);
+  const btn = document.getElementById('fedapay-btn');
+  const errEl = document.getElementById('fedapay-pay-error');
+
+  const setError = (msg) => {
+    if (errEl) {
+      errEl.textContent = msg;
+      errEl.classList.remove('hidden');
+    } else {
+      alert(msg);
+    }
+  };
 
   if (!Number.isInteger(amount) || amount <= 0) {
-    alert('Le montant doit être un entier positif.');
+    setError('Le montant doit être un entier positif.');
     return;
+  }
+
+  if (btn) {
+    if (!btn.dataset.defaultLabel) btn.dataset.defaultLabel = btn.textContent.trim();
+    btn.disabled = true;
+    btn.textContent = 'Redirection vers FedaPay...';
+  }
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.classList.add('hidden');
   }
 
   try {
@@ -2571,37 +2658,17 @@ async function initierPaiementFedapay(event) {
       method: 'POST',
       body: JSON.stringify({ montant: amount }),
     });
-
-    if (!fedapayPublicKey) {
-      const keyData = await apiFetch('/api/fedapay/public-key');
-      fedapayPublicKey = keyData.public_key;
+    const url = data?.url;
+    if (!url || typeof url !== 'string') {
+      throw new Error('Réponse de paiement incomplète.');
     }
-
-    const widget = window.FedapayCheckout || window.FedaPayCheckout || window.FedaPay || window.fedapay;
-    if (!widget) {
-      alert('Paiement temporairement indisponible. Réessayez.');
-      return;
-    }
-
-    const openWidget = widget.open || widget.init;
-    if (typeof openWidget !== 'function') {
-      alert('Paiement temporairement indisponible. Réessayez.');
-      return;
-    }
-
-    openWidget.call(widget, {
-      token: data.token,
-      public_key: fedapayPublicKey,
-      onComplete: () => {
-        alert('Paiement FedaPay terminé. Merci !');
-        Promise.all([chargerCotisations(), chargerTransactions()]).catch(() => {});
-      },
-      onError: () => {
-        alert('Paiement temporairement indisponible. Réessayez.');
-      },
-    });
+    window.location.href = url;
   } catch (error) {
-    alert('Paiement temporairement indisponible. Réessayez.');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.defaultLabel || 'Payer';
+    }
+    setError(error.message || 'Paiement temporairement indisponible. Réessayez.');
   }
 }
 
@@ -2651,6 +2718,7 @@ function parseSseEvent(eventText) {
 
   try {
     const notification = JSON.parse(line.slice(6));
+    onPaiementRetourCotisationNotification(notification);
     notifications.unshift(notification);
     renderNotifications();
     refreshDataAfterNotification(notification);

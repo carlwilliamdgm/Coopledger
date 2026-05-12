@@ -20,7 +20,6 @@
   <title>CoopLedger</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="stylesheet" href="css/style.css">
-  <script src="https://cdn.fedapay.com/checkout.js?v=1.1.7"></script>
 </head>
 
 <body>
@@ -369,6 +368,19 @@
         <div class="demo-actions">
           <button class="btn-secondary" onclick="arreterDemo()">Quitter</button>
           <button class="btn-primary" onclick="etapeDemoSuivante()">Suivant</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="paiement-retour-view" class="paiement-retour-view hidden" role="status" aria-live="polite">
+      <div class="paiement-retour-card">
+        <div id="paiement-retour-progress">
+          <div class="paiement-retour-spinner" aria-hidden="true"></div>
+          <p class="paiement-retour-msg-main">Paiement reçu. Confirmation en cours...</p>
+          <p class="paiement-retour-msg-sub">Vous serez notifié automatiquement dès confirmation.</p>
+        </div>
+        <div id="paiement-retour-success" class="hidden">
+          <p class="paiement-retour-msg-main">Cotisation confirmée et scellée sur la blockchain.</p>
         </div>
       </div>
     </div>
