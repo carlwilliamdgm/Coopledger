@@ -671,6 +671,33 @@ async function pushSubscribe(req, res) {
   sendJson(res, 201, { success: true });
 }
 
+function maskInstanceKey(value) {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  if (s.length <= 8) return `${s.slice(0, 2)}••••${s.slice(-2)}`;
+  return `${s.slice(0, 4)}…${s.slice(-4)}`;
+}
+
+async function pushUnsubscribe(req, res) {
+  await requireAuth(req, res);
+
+  const body = await readBody(req);
+  const endpoint = cleanString(body.endpoint || body.subscription?.endpoint || '');
+
+  if (!endpoint) {
+    throw new HttpError(400, 'endpoint requis.');
+  }
+
+  const memberId = Number(req.user.id);
+  await pool.query(
+    `DELETE FROM push_subscriptions
+     WHERE subscription->>'endpoint' = $1 AND member_id = $2`,
+    [endpoint, memberId],
+  );
+
+  sendJson(res, 200, { success: true });
+}
+
 async function login(req, res) {
   const { username, password } = await readBody(req);
   const cleanUsername = cleanString(username);
@@ -806,6 +833,8 @@ async function listAllConfigAdmin(req, res) {
       config[row.cle] = row.valeur;
     }
   }
+  const cleUnique = await pool.query("SELECT valeur FROM config WHERE cle = 'cle_unique' LIMIT 1");
+  config.cle_unique_masked = maskInstanceKey(cleUnique.rows[0]?.valeur);
   sendJson(res, 200, { config });
 }
 
@@ -2477,6 +2506,7 @@ async function routeDemoApi(req, res, pathname) {
         nom_coop: 'Coopérative de démonstration',
         duree_mandat: '12',
         duree_inactivite_mois: '3',
+        cle_unique_masked: 'demo…demo',
       },
     });
   }
@@ -2503,6 +2533,9 @@ async function routeDemoApi(req, res, pathname) {
   }
   if (req.method === 'GET' && pathname === '/api/push/public-key') {
     return sendJson(res, 200, { public_key: '' });
+  }
+  if (req.method === 'POST' && pathname === '/api/push/unsubscribe') {
+    return sendJson(res, 200, { success: true });
   }
   if (req.method === 'POST' && pathname === '/api/fedapay/initier') {
     return sendJson(res, 502, { error: 'Paiement temporairement indisponible' });
@@ -2602,6 +2635,7 @@ async function routeApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/push/public-key') return getPushPublicKey(req, res);
   if (req.method === 'POST' && pathname === '/api/push/subscribe') return pushSubscribe(req, res);
+  if (req.method === 'POST' && pathname === '/api/push/unsubscribe') return pushUnsubscribe(req, res);
 
   if (req.method === 'POST' && pathname === '/api/cotisations') return createCotisation(req, res);
   if (req.method === 'POST' && pathname === '/api/fedapay/initier') return initierFedapay(req, res);

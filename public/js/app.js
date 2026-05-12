@@ -17,6 +17,363 @@ let demoSessionTimer = null;
 
 const TOKEN_KEY = 'token';
 const PENDING_TRANSACTIONS_KEY = 'pendingTransactions';
+const THEME_STORAGE_KEY = 'cl_theme';
+const LANG_STORAGE_KEY = 'cl_lang';
+const PUSH_PREF_STORAGE_KEY = 'cl_push_enabled';
+
+/** @type {MediaQueryList|null} */
+let systemLightMql = null;
+
+const I18N = {
+  fr: {
+    'shell.sessionLabel': 'Session active',
+    'shell.switchProfile': 'Changer de profil',
+    'nav.dashboard': '📊 Dashboard',
+    'nav.transactions': '📋 Transactions',
+    'nav.vote': '🗳️ Vote',
+    'nav.members': '👥 Membres',
+    'nav.cotisations': '💰 Cotisations',
+    'nav.notifications': '🔔 Notifications',
+    'nav.configuration': '⚙️ Configuration',
+    'auth.heroTitle': 'Connexion coopérative',
+    'auth.heroSubtitle': 'Identifiez-vous ou enregistrez-vous pour ouvrir une interface adaptée à votre rôle.',
+    'auth.loginPanel': 'Connexion',
+    'auth.launchDemo': 'Lancer la démo',
+    'auth.registerPanel': 'Nouvel accès membre',
+    'page.dashboard.title': 'Dashboard',
+    'page.dashboard.balanceLabel': 'Solde actuel de la coopérative',
+    'page.dashboard.stellar': '🔗 Enregistré sur Stellar Testnet',
+    'page.dashboard.statContrib': 'Cotisations ce mois',
+    'page.dashboard.statExpenses': 'Dépenses ce mois',
+    'page.dashboard.statMembers': 'Membres actifs',
+    'page.dashboard.statVotes': 'Votes en cours',
+    'page.dashboard.healthLabel': 'Score de santé',
+    'page.dashboard.proofTx': 'transactions enregistrées',
+    'page.dashboard.proofVotes': 'votes fermés',
+    'page.dashboard.proofLast': 'dernière mise à jour',
+    'page.transactions.title': 'Historique des Transactions',
+    'page.transactions.new': '+ Nouvelle Transaction',
+    'page.vote.title': 'Votes en cours',
+    'page.vote.suggest': '+ Suggérer une opération',
+    'page.members.add': '+ Ajouter une personne',
+    'page.members.registeredSuffix': 'personnes enregistrées',
+    'page.members.titleWithCoop': 'Membres — {{coop}}',
+    'page.members.titleShort': 'Membres',
+    'common.close': 'Fermer',
+    'a11y.openMenu': 'Ouvrir le menu',
+    'a11y.closeMenu': 'Fermer le menu',
+    'settings.title': 'Paramètres',
+    'settings.sectionTheme': 'Thème',
+    'settings.themeLabel': 'Apparence',
+    'settings.themeLight': 'Clair',
+    'settings.themeDark': 'Sombre',
+    'settings.themeSystem': 'Système',
+    'settings.sectionLang': 'Langue',
+    'settings.langLabel': 'Langue d’affichage',
+    'settings.sectionPush': 'Notifications',
+    'settings.pushLabel': 'Notifications Web Push',
+    'settings.pushHint': 'Activez pour recevoir des alertes sur cet appareil.',
+    'settings.sectionSystem': 'Informations système',
+    'settings.sysInstance': 'Clé d’instance',
+    'settings.sysCoopName': 'Nom de la coopérative',
+    'settings.sysMandate': 'Durée du mandat',
+    'settings.sysInactivity': 'Inactivité (mois)',
+    'settings.na': '—',
+    'settings.restricted': 'Réservé aux administrateurs',
+    'settings.monthsSuffix': ' mois',
+    'settings.openTitle': 'Paramètres',
+    'auth.labelUsername': 'Identifiant',
+    'auth.labelPassword': 'Mot de passe',
+    'auth.rememberLogin': 'Rester connecté',
+    'auth.submitLogin': 'Se connecter',
+    'auth.labelFullName': 'Nom complet',
+    'auth.labelEmail': 'Email',
+    'auth.observerOnly': 'Je souhaite m’inscrire comme Observateur uniquement',
+    'auth.submitRegister': 'Créer le compte et entrer',
+  },
+  en: {
+    'shell.sessionLabel': 'Active session',
+    'shell.switchProfile': 'Switch profile',
+    'nav.dashboard': '📊 Dashboard',
+    'nav.transactions': '📋 Transactions',
+    'nav.vote': '🗳️ Vote',
+    'nav.members': '👥 Members',
+    'nav.cotisations': '💰 Contributions',
+    'nav.notifications': '🔔 Notifications',
+    'nav.configuration': '⚙️ Settings',
+    'auth.heroTitle': 'Cooperative login',
+    'auth.heroSubtitle': 'Sign in or register for an interface tailored to your role.',
+    'auth.loginPanel': 'Sign in',
+    'auth.launchDemo': 'Launch demo',
+    'auth.registerPanel': 'New member access',
+    'page.dashboard.title': 'Dashboard',
+    'page.dashboard.balanceLabel': 'Current cooperative balance',
+    'page.dashboard.stellar': '🔗 Recorded on Stellar Testnet',
+    'page.dashboard.statContrib': 'Contributions this month',
+    'page.dashboard.statExpenses': 'Expenses this month',
+    'page.dashboard.statMembers': 'Active members',
+    'page.dashboard.statVotes': 'Open votes',
+    'page.dashboard.healthLabel': 'Health score',
+    'page.dashboard.proofTx': 'recorded transactions',
+    'page.dashboard.proofVotes': 'closed votes',
+    'page.dashboard.proofLast': 'last update',
+    'page.transactions.title': 'Transaction history',
+    'page.transactions.new': '+ New transaction',
+    'page.vote.title': 'Open votes',
+    'page.vote.suggest': '+ Suggest an operation',
+    'page.members.add': '+ Add a person',
+    'page.members.registeredSuffix': 'people registered',
+    'page.members.titleWithCoop': 'Members — {{coop}}',
+    'page.members.titleShort': 'Members',
+    'common.close': 'Close',
+    'a11y.openMenu': 'Open menu',
+    'a11y.closeMenu': 'Close menu',
+    'settings.title': 'Settings',
+    'settings.sectionTheme': 'Theme',
+    'settings.themeLabel': 'Appearance',
+    'settings.themeLight': 'Light',
+    'settings.themeDark': 'Dark',
+    'settings.themeSystem': 'System',
+    'settings.sectionLang': 'Language',
+    'settings.langLabel': 'Display language',
+    'settings.sectionPush': 'Notifications',
+    'settings.pushLabel': 'Web push notifications',
+    'settings.pushHint': 'Turn on to receive alerts on this device.',
+    'settings.sectionSystem': 'System information',
+    'settings.sysInstance': 'Instance key',
+    'settings.sysCoopName': 'Cooperative name',
+    'settings.sysMandate': 'Mandate duration',
+    'settings.sysInactivity': 'Inactivity (months)',
+    'settings.na': '—',
+    'settings.restricted': 'Administrators only',
+    'settings.monthsSuffix': ' months',
+    'settings.openTitle': 'Settings',
+    'auth.labelUsername': 'Username',
+    'auth.labelPassword': 'Password',
+    'auth.rememberLogin': 'Stay signed in',
+    'auth.submitLogin': 'Sign in',
+    'auth.labelFullName': 'Full name',
+    'auth.labelEmail': 'Email',
+    'auth.observerOnly': 'I want to register as Observer only',
+    'auth.submitRegister': 'Create account and enter',
+  },
+};
+
+function getUiLang() {
+  return localStorage.getItem(LANG_STORAGE_KEY) === 'en' ? 'en' : 'fr';
+}
+
+function t(key, vars) {
+  const lang = getUiLang();
+  let s = I18N[lang]?.[key] ?? I18N.fr[key] ?? key;
+  if (vars && typeof s === 'string') {
+    Object.entries(vars).forEach(([k, v]) => {
+      s = s.split(`{{${k}}}`).join(String(v));
+    });
+  }
+  return s;
+}
+
+function applyDocumentI18n() {
+  document.documentElement.lang = getUiLang();
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const k = el.getAttribute('data-i18n');
+    if (k) el.textContent = t(k);
+  });
+  document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-aria-label');
+    if (k) el.setAttribute('aria-label', t(k));
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    const k = el.getAttribute('data-i18n-title');
+    if (k) el.setAttribute('title', t(k));
+  });
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle && document.body.classList.contains('sidebar-open')) {
+    const ck = toggle.getAttribute('data-i18n-aria-close');
+    if (ck) toggle.setAttribute('aria-label', t(ck));
+  } else if (toggle) {
+    const ok = toggle.getAttribute('data-i18n-aria-open');
+    if (ok) toggle.setAttribute('aria-label', t(ok));
+  }
+}
+
+function resolveStoredTheme() {
+  const raw = localStorage.getItem(THEME_STORAGE_KEY) || 'system';
+  if (raw === 'light') return 'light';
+  if (raw === 'dark') return 'dark';
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+  return 'dark';
+}
+
+function applyResolvedTheme(resolved) {
+  document.documentElement.setAttribute('data-theme', resolved);
+}
+
+function syncThemeFromStorage() {
+  applyResolvedTheme(resolveStoredTheme());
+}
+
+function installThemeMediaListener() {
+  if (!window.matchMedia) return;
+  systemLightMql = window.matchMedia('(prefers-color-scheme: light)');
+  const onChange = () => {
+    if ((localStorage.getItem(THEME_STORAGE_KEY) || 'system') === 'system') {
+      syncThemeFromStorage();
+    }
+  };
+  if (typeof systemLightMql.addEventListener === 'function') {
+    systemLightMql.addEventListener('change', onChange);
+  } else if (typeof systemLightMql.addListener === 'function') {
+    systemLightMql.addListener(onChange);
+  }
+}
+
+function isAppAdmin() {
+  return normalizeRole(currentUser?.role) === 'admin';
+}
+
+async function unsubscribeFromWebPush() {
+  if (isDemoSession()) {
+    return;
+  }
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      return;
+    }
+    const endpoint = sub.endpoint;
+    await sub.unsubscribe();
+    await apiFetch('/api/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    });
+  } catch (_) {
+    /* optional */
+  }
+}
+
+function getPushPreferenceEnabled() {
+  return localStorage.getItem(PUSH_PREF_STORAGE_KEY) !== 'false';
+}
+
+async function loadSettingsSystemInfo() {
+  const na = t('settings.na');
+  const restricted = t('settings.restricted');
+  const keyEl = document.getElementById('settings-sys-key');
+  const nomEl = document.getElementById('settings-sys-nom');
+  const mandEl = document.getElementById('settings-sys-mandat');
+  const inactEl = document.getElementById('settings-sys-inact');
+  if (!keyEl || !nomEl || !mandEl || !inactEl) return;
+  keyEl.textContent = na;
+  nomEl.textContent = na;
+  mandEl.textContent = na;
+  inactEl.textContent = na;
+  if (!currentUser) {
+    return;
+  }
+  try {
+    if (isAppAdmin()) {
+      const full = await apiFetch('/api/config/all');
+      const cfg = full.config || {};
+      keyEl.textContent = cfg.cle_unique_masked || na;
+      nomEl.textContent = cfg.nom_coop || na;
+      mandEl.textContent = cfg.duree_mandat != null && String(cfg.duree_mandat) !== ''
+        ? `${cfg.duree_mandat}${t('settings.monthsSuffix')}`
+        : na;
+      inactEl.textContent = cfg.duree_inactivite_mois != null && String(cfg.duree_inactivite_mois) !== ''
+        ? String(cfg.duree_inactivite_mois)
+        : na;
+    } else {
+      const data = await apiFetch('/api/config');
+      keyEl.textContent = restricted;
+      nomEl.textContent = data.nom_coop || na;
+      mandEl.textContent = restricted;
+      inactEl.textContent = restricted;
+    }
+  } catch (_) {
+    keyEl.textContent = na;
+    nomEl.textContent = na;
+    mandEl.textContent = na;
+    inactEl.textContent = na;
+  }
+}
+
+function openSettingsPanel() {
+  const panel = document.getElementById('settings-panel');
+  const backdrop = document.getElementById('settings-backdrop');
+  const btn = document.getElementById('settings-open-btn');
+  if (!panel || !backdrop) return;
+  const themeSel = document.getElementById('settings-theme');
+  const langSel = document.getElementById('settings-lang');
+  const pushEl = document.getElementById('settings-push-toggle');
+  if (themeSel) themeSel.value = localStorage.getItem(THEME_STORAGE_KEY) || 'system';
+  if (langSel) langSel.value = getUiLang();
+  if (pushEl) pushEl.checked = getPushPreferenceEnabled();
+  applyDocumentI18n();
+  backdrop.classList.add('is-open');
+  panel.classList.add('is-open');
+  backdrop.setAttribute('aria-hidden', 'false');
+  panel.setAttribute('aria-hidden', 'false');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  loadSettingsSystemInfo();
+}
+
+function closeSettingsPanel() {
+  const panel = document.getElementById('settings-panel');
+  const backdrop = document.getElementById('settings-backdrop');
+  const btn = document.getElementById('settings-open-btn');
+  backdrop?.classList.remove('is-open');
+  panel?.classList.remove('is-open');
+  backdrop?.setAttribute('aria-hidden', 'true');
+  panel?.setAttribute('aria-hidden', 'true');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function installSettingsPanel() {
+  const openBtn = document.getElementById('settings-open-btn');
+  const closeBtn = document.getElementById('settings-close-btn');
+  const backdrop = document.getElementById('settings-backdrop');
+  const themeSel = document.getElementById('settings-theme');
+  const langSel = document.getElementById('settings-lang');
+  const pushToggle = document.getElementById('settings-push-toggle');
+  if (!openBtn || openBtn.dataset.bound === '1') return;
+  openBtn.dataset.bound = '1';
+  openBtn.addEventListener('click', () => openSettingsPanel());
+  closeBtn?.addEventListener('click', () => closeSettingsPanel());
+  backdrop?.addEventListener('click', () => closeSettingsPanel());
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && document.getElementById('settings-panel')?.classList.contains('is-open')) {
+      closeSettingsPanel();
+    }
+  });
+  themeSel?.addEventListener('change', () => {
+    const v = themeSel.value;
+    localStorage.setItem(THEME_STORAGE_KEY, v);
+    syncThemeFromStorage();
+  });
+  langSel?.addEventListener('change', () => {
+    localStorage.setItem(LANG_STORAGE_KEY, langSel.value);
+    applyDocumentI18n();
+    renderAuthForms();
+    if (document.getElementById('settings-panel')?.classList.contains('is-open')) {
+      loadSettingsSystemInfo();
+    }
+  });
+  pushToggle?.addEventListener('change', async () => {
+    if (pushToggle.checked) {
+      localStorage.setItem(PUSH_PREF_STORAGE_KEY, 'true');
+      await subscribeToWebPush();
+    } else {
+      localStorage.setItem(PUSH_PREF_STORAGE_KEY, 'false');
+      await unsubscribeFromWebPush();
+    }
+  });
+}
 
 const ROLE_PERMISSIONS = {
   createTransaction: ['tresorier'],
@@ -365,7 +722,9 @@ function openSessionFromToken(token) {
   applyPermissions();
   startAfterLogin();
   startNotificationsStream();
-  subscribeToWebPush();
+  if (getPushPreferenceEnabled()) {
+    subscribeToWebPush();
+  }
 }
 
 async function startAfterLogin() {
@@ -422,7 +781,8 @@ function closeMobileSidebar() {
   const toggle = document.getElementById('sidebar-toggle');
   if (toggle) {
     toggle.setAttribute('aria-expanded', 'false');
-    toggle.setAttribute('aria-label', 'Ouvrir le menu');
+    const ok = toggle.getAttribute('data-i18n-aria-open');
+    toggle.setAttribute('aria-label', ok ? t(ok) : 'Ouvrir le menu');
   }
 }
 
@@ -433,7 +793,8 @@ function openMobileSidebar() {
   const toggle = document.getElementById('sidebar-toggle');
   if (toggle) {
     toggle.setAttribute('aria-expanded', 'true');
-    toggle.setAttribute('aria-label', 'Fermer le menu');
+    const ck = toggle.getAttribute('data-i18n-aria-close');
+    toggle.setAttribute('aria-label', ck ? t(ck) : 'Fermer le menu');
   }
 }
 
@@ -526,15 +887,15 @@ function renderAuthForms() {
   if (container) {
     container.innerHTML = `
       <form id="login-form" class="login-form">
-        <label for="login-username">Identifiant</label>
+        <label for="login-username">${t('auth.labelUsername')}</label>
         <input id="login-username" type="text" placeholder="komi_adjoka" autocomplete="username" required>
-        <label for="login-password">Mot de passe</label>
+        <label for="login-password">${t('auth.labelPassword')}</label>
         <input id="login-password" type="password" autocomplete="current-password" required>
         <label class="remember-row">
           <input id="remember-login" type="checkbox">
-          <span>Rester connecte</span>
+          <span>${t('auth.rememberLogin')}</span>
         </label>
-        <button class="btn-primary" type="submit">Se connecter</button>
+        <button class="btn-primary" type="submit">${t('auth.submitLogin')}</button>
       </form>
     `;
     document.getElementById('login-form').addEventListener('submit', loginUser);
@@ -542,20 +903,20 @@ function renderAuthForms() {
 
   if (registerForm) {
     registerForm.innerHTML = `
-      <p class="panel-label">Nouvel acces membre</p>
-      <label for="register-name">Nom complet</label>
+      <p class="panel-label">${t('auth.registerPanel')}</p>
+      <label for="register-name">${t('auth.labelFullName')}</label>
       <input id="register-name" type="text" placeholder="Ex. Komi ADJOKA" required>
-      <label for="register-username">Identifiant</label>
+      <label for="register-username">${t('auth.labelUsername')}</label>
       <input id="register-username" type="text" placeholder="komi_adjoka" pattern="[a-zA-Z0-9_]{3,20}" minlength="3" maxlength="20" autocomplete="username" required>
-      <label for="register-email">Email</label>
+      <label for="register-email">${t('auth.labelEmail')}</label>
       <input id="register-email" type="email" placeholder="komi@coop.test" required>
-      <label for="register-password">Mot de passe</label>
+      <label for="register-password">${t('auth.labelPassword')}</label>
       <input id="register-password" type="password" minlength="6" autocomplete="new-password" required>
       <label class="remember-row">
         <input id="register-observer" type="checkbox">
-        <span>Je souhaite m'inscrire comme Observateur uniquement</span>
+        <span>${t('auth.observerOnly')}</span>
       </label>
-      <button class="btn-primary" type="submit">Creer le compte et entrer</button>
+      <button class="btn-primary" type="submit">${t('auth.submitRegister')}</button>
     `;
     registerForm.onsubmit = enregistrerProfil;
   }
@@ -566,9 +927,9 @@ function installExtraNavItems() {
   if (!nav || nav.querySelector('[data-page="cotisations"]')) return;
 
   nav.insertAdjacentHTML('beforeend', `
-    <a href="#" class="nav-item" data-page="cotisations">💰 Cotisations</a>
-    <a href="#" class="nav-item" data-page="notifications">🔔 Notifications</a>
-    <a href="#" class="nav-item hidden" data-page="configuration" id="nav-configuration">⚙️ Configuration</a>
+    <a href="#" class="nav-item" data-page="cotisations"><span data-i18n="nav.cotisations">💰 Cotisations</span></a>
+    <a href="#" class="nav-item" data-page="notifications"><span data-i18n="nav.notifications">🔔 Notifications</span></a>
+    <a href="#" class="nav-item hidden" data-page="configuration" id="nav-configuration"><span data-i18n="nav.configuration">⚙️ Configuration</span></a>
   `);
 
   nav.querySelectorAll('.nav-item').forEach(item => {
@@ -896,12 +1257,12 @@ async function chargerConfig() {
   try {
     const data = await apiFetch('/api/config');
     coopConfig = data;
-    document.getElementById('members-title').textContent = `Membres — ${data.nom_coop || 'Coop'}`;
+    document.getElementById('members-title').textContent = t('page.members.titleWithCoop', { coop: data.nom_coop || 'Coop' });
     const sidebarName = document.getElementById('sidebar-coop-name');
     if (sidebarName) sidebarName.textContent = data.nom_coop || 'CoopLedger';
   } catch (error) {
     coopConfig = { nom_coop: null };
-    document.getElementById('members-title').textContent = 'Membres';
+    document.getElementById('members-title').textContent = t('page.members.titleShort');
     const sidebarName = document.getElementById('sidebar-coop-name');
     if (sidebarName) sidebarName.textContent = 'CoopLedger';
   }
@@ -2351,6 +2712,9 @@ window.arreterDemo = arreterDemo;
 document.addEventListener('DOMContentLoaded', () => {
   installDynamicInterface();
   installMobileShellNav();
+  installSettingsPanel();
+  installThemeMediaListener();
+  applyDocumentI18n();
   updateNetworkStatus();
 
   window.addEventListener('online', () => {

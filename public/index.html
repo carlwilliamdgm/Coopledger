@@ -3,6 +3,19 @@
 
 <head>
   <meta charset="UTF-8">
+  <script>
+    (function () {
+      try {
+        var th = localStorage.getItem('cl_theme') || 'system';
+        var resolved = 'dark';
+        if (th === 'light') resolved = 'light';
+        else if (th === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches) resolved = 'light';
+        document.documentElement.setAttribute('data-theme', resolved);
+        var lg = localStorage.getItem('cl_lang');
+        document.documentElement.lang = lg === 'en' ? 'en' : 'fr';
+      } catch (e) { }
+    })();
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CoopLedger</title>
   <link rel="manifest" href="/manifest.json">
@@ -17,13 +30,13 @@
         <div class="logo">
           <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
         </div>
-        <h1>Connexion coopérative</h1>
-        <p>Identifiez-vous ou enregistrez-vous pour ouvrir une interface adaptée à votre rôle.</p>
+        <h1 data-i18n="auth.heroTitle">Connexion coopérative</h1>
+        <p data-i18n="auth.heroSubtitle">Identifiez-vous ou enregistrez-vous pour ouvrir une interface adaptée à votre rôle.</p>
       </div>
 
       <div class="auth-grid">
         <div class="auth-panel">
-          <p class="panel-label">Connexion</p>
+          <p class="panel-label" data-i18n="auth.loginPanel">Connexion</p>
           <div id="existing-profiles">
             <form id="login-form" class="login-form">
               <label for="login-username">Identifiant</label>
@@ -41,10 +54,10 @@
           </div>
         </div>
 
-        <button type="button" class="demo-button auth-demo-btn" onclick="lancerDemo()">Lancer la démo</button>
+        <button type="button" class="demo-button auth-demo-btn" onclick="lancerDemo()" data-i18n="auth.launchDemo">Lancer la démo</button>
 
         <form class="auth-panel" onsubmit="enregistrerProfil(event)">
-          <p class="panel-label">Nouvel accès membre</p>
+          <p class="panel-label" data-i18n="auth.registerPanel">Nouvel accès membre</p>
           <label for="register-name">Nom complet</label>
           <input id="register-name" type="text" placeholder="Ex. Komi ADJOKA" required>
 
@@ -77,24 +90,28 @@
         <span class="logo-coop">COOP</span><span class="logo-ledger">LEDGER</span>
       </div>
       <div class="login-panel">
-        <label>Session active</label>
+        <label data-i18n="shell.sessionLabel">Session active</label>
         <div class="profile-card">
           <strong id="profile-name">-</strong>
           <span id="profile-role">-</span>
           <p id="profile-description">-</p>
         </div>
-        <button class="logout-button" onclick="deconnecter()">Changer de profil</button>
+        <button type="button" class="logout-button" onclick="deconnecter()" data-i18n="shell.switchProfile">Changer de profil</button>
       </div>
       <nav>
-        <a href="#" class="nav-item active" onclick="showPage('dashboard')">📊 Dashboard</a>
-        <a href="#" class="nav-item" onclick="showPage('transactions')">📋 Transactions</a>
-        <a href="#" class="nav-item" onclick="showPage('vote')">🗳️ Vote</a>
-        <a href="#" class="nav-item" onclick="showPage('membres')">👥 Membres</a>
+        <a href="#" class="nav-item active" data-page="dashboard"><span data-i18n="nav.dashboard">📊 Dashboard</span></a>
+        <a href="#" class="nav-item" data-page="transactions"><span data-i18n="nav.transactions">📋 Transactions</span></a>
+        <a href="#" class="nav-item" data-page="vote"><span data-i18n="nav.vote">🗳️ Vote</span></a>
+        <a href="#" class="nav-item" data-page="membres"><span data-i18n="nav.members">👥 Membres</span></a>
       </nav>
-      <div class="sidebar-footer">
-        <p id="sidebar-coop-name">-</p>
-        <p id="sidebar-coop-location"></p>
-        <p id="sidebar-members-count">-</p>
+      <div class="sidebar-footer sidebar-footer-row">
+        <div class="sidebar-footer-text">
+          <p id="sidebar-coop-name">-</p>
+          <p id="sidebar-coop-location"></p>
+          <p id="sidebar-members-count">-</p>
+        </div>
+        <button type="button" id="settings-open-btn" class="settings-trigger" aria-controls="settings-panel"
+          aria-expanded="false" data-i18n-title="settings.openTitle" title="Paramètres">⚙️</button>
       </div>
     </aside>
 
@@ -102,7 +119,7 @@
     <div class="main-content">
       <header class="mobile-nav-header">
         <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-controls="app-sidebar"
-          aria-expanded="false" aria-label="Ouvrir le menu">
+          aria-expanded="false" data-i18n-aria-open="a11y.openMenu" data-i18n-aria-close="a11y.closeMenu" aria-label="Ouvrir le menu">
           <span class="sidebar-toggle-bars" aria-hidden="true"></span>
         </button>
       </header>
@@ -111,47 +128,47 @@
       </div>
       <!-- DASHBOARD -->
       <div id="page-dashboard" class="page active">
-        <h1>Dashboard</h1>
+        <h1 data-i18n="page.dashboard.title">Dashboard</h1>
         <div class="solde-card">
-          <p class="solde-label">Solde actuel de la coopérative</p>
+          <p class="solde-label" data-i18n="page.dashboard.balanceLabel">Solde actuel de la coopérative</p>
           <p id="coop-balance" class="solde-montant">0 FCFA</p>
-          <p class="solde-blockchain">🔗 Enregistré sur Stellar Testnet</p>
+          <p class="solde-blockchain" data-i18n="page.dashboard.stellar">🔗 Enregistré sur Stellar Testnet</p>
         </div>
         <div class="stats-grid">
           <div class="stat-card">
-            <p class="stat-label">Cotisations ce mois</p>
+            <p class="stat-label" data-i18n="page.dashboard.statContrib">Cotisations ce mois</p>
             <p id="monthly-contributions" class="stat-value">-</p>
           </div>
           <div class="stat-card">
-            <p class="stat-label">Dépenses ce mois</p>
+            <p class="stat-label" data-i18n="page.dashboard.statExpenses">Dépenses ce mois</p>
             <p id="monthly-expenses" class="stat-value">-</p>
           </div>
           <div class="stat-card">
-            <p class="stat-label">Membres actifs</p>
+            <p class="stat-label" data-i18n="page.dashboard.statMembers">Membres actifs</p>
             <p id="active-members-count" class="stat-value">-</p>
           </div>
           <div class="stat-card">
-            <p class="stat-label">Votes en cours</p>
+            <p class="stat-label" data-i18n="page.dashboard.statVotes">Votes en cours</p>
             <p id="open-votes-count" class="stat-value">-</p>
           </div>
         </div>
         <div class="transparency-panel">
           <div>
-            <p class="panel-label">Score de santé</p>
+            <p class="panel-label" data-i18n="page.dashboard.healthLabel">Score de santé</p>
             <p id="financial-health-score" class="panel-score">-</p>
           </div>
           <div class="proof-grid">
             <div>
               <span id="proof-count">-</span>
-              <small>transactions enregistrées</small>
+              <small data-i18n="page.dashboard.proofTx">transactions enregistrées</small>
             </div>
             <div>
               <span id="votes-proof-count">-</span>
-              <small>votes fermés</small>
+              <small data-i18n="page.dashboard.proofVotes">votes fermés</small>
             </div>
             <div>
               <span id="proof-last">-</span>
-              <small>dernière mise à jour</small>
+              <small data-i18n="page.dashboard.proofLast">dernière mise à jour</small>
             </div>
           </div>
         </div>
@@ -160,8 +177,8 @@
       <!-- TRANSACTIONS -->
       <div id="page-transactions" class="page">
         <div class="page-header">
-          <h1>Historique des Transactions</h1>
-          <button id="new-transaction-btn" class="btn-primary" onclick="enregistrerTransaction()">+ Nouvelle
+          <h1 data-i18n="page.transactions.title">Historique des Transactions</h1>
+          <button id="new-transaction-btn" class="btn-primary" onclick="enregistrerTransaction()" data-i18n="page.transactions.new">+ Nouvelle
             Transaction</button>
         </div>
         <div id="tx-filters" class="login-panel hidden">
@@ -220,7 +237,7 @@
               <p class="panel-label">Recu blockchain</p>
               <h2 id="receipt-title">Transaction scellee</h2>
             </div>
-            <button class="btn-secondary" onclick="fermerRecu()">Fermer</button>
+            <button type="button" class="btn-secondary" onclick="fermerRecu()" data-i18n="common.close">Fermer</button>
           </div>
           <div class="receipt-grid">
             <div>
@@ -244,8 +261,8 @@
       <!-- VOTE -->
       <div id="page-vote" class="page">
         <div class="page-header">
-          <h1>Votes en cours</h1>
-          <button id="proposal-btn" class="btn-primary" onclick="suggererOperation()">+ Suggérer une opération</button>
+          <h1 data-i18n="page.vote.title">Votes en cours</h1>
+          <button id="proposal-btn" class="btn-primary" onclick="suggererOperation()" data-i18n="page.vote.suggest">+ Suggérer une opération</button>
         </div>
         <div id="proposal-panel" class="proposal-panel hidden">
           <div>
@@ -265,10 +282,10 @@
       <div id="page-membres" class="page">
         <div class="page-header">
           <h1 id="members-title">Membres</h1>
-          <button id="add-member-btn" class="btn-primary" onclick="ajouterMembre()">+ Ajouter une personne</button>
+          <button type="button" id="add-member-btn" class="btn-primary" onclick="ajouterMembre()" data-i18n="page.members.add">+ Ajouter une personne</button>
         </div>
         <div id="members-stats" class="membres-stats">
-          <p><span id="members-count">-</span> personnes enregistrées</p>
+          <p><span id="members-count">-</span> <span data-i18n="page.members.registeredSuffix">personnes enregistrées</span></p>
         </div>
         <div class="table-container">
           <table>
@@ -290,6 +307,59 @@
         </div>
       </div>
     </div>
+
+    <div id="settings-backdrop" class="settings-backdrop" aria-hidden="true"></div>
+    <aside id="settings-panel" class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title"
+      aria-hidden="true">
+      <div class="settings-panel-header">
+        <h2 id="settings-title" data-i18n="settings.title">Paramètres</h2>
+        <button type="button" id="settings-close-btn" class="settings-panel-close" data-i18n-aria-label="common.close" aria-label="Fermer">&times;</button>
+      </div>
+      <div class="settings-panel-body">
+        <div class="settings-section">
+          <h3 data-i18n="settings.sectionTheme">Thème</h3>
+          <div class="settings-field">
+            <label for="settings-theme" data-i18n="settings.themeLabel">Apparence</label>
+            <select id="settings-theme" autocomplete="off">
+              <option value="light" data-i18n="settings.themeLight">Clair</option>
+              <option value="dark" data-i18n="settings.themeDark">Sombre</option>
+              <option value="system" data-i18n="settings.themeSystem">Système</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3 data-i18n="settings.sectionLang">Langue</h3>
+          <div class="settings-field">
+            <label for="settings-lang" data-i18n="settings.langLabel">Langue d’affichage</label>
+            <select id="settings-lang" autocomplete="off">
+              <option value="fr">Français</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3 data-i18n="settings.sectionPush">Notifications</h3>
+          <div class="settings-toggle-row">
+            <span id="settings-push-label" data-i18n="settings.pushLabel">Notifications Web Push</span>
+            <input type="checkbox" id="settings-push-toggle" aria-labelledby="settings-push-label">
+          </div>
+          <p id="settings-push-hint" class="login-panel settings-push-hint" data-i18n="settings.pushHint">Activez pour recevoir des alertes sur cet appareil.</p>
+        </div>
+        <div class="settings-section">
+          <h3 data-i18n="settings.sectionSystem">Informations système</h3>
+          <dl class="settings-system-grid" id="settings-system-info">
+            <dt data-i18n="settings.sysInstance">Clé d’instance</dt>
+            <dd id="settings-sys-key">—</dd>
+            <dt data-i18n="settings.sysCoopName">Nom de la coopérative</dt>
+            <dd id="settings-sys-nom">—</dd>
+            <dt data-i18n="settings.sysMandate">Durée du mandat</dt>
+            <dd id="settings-sys-mandat">—</dd>
+            <dt data-i18n="settings.sysInactivity">Inactivité (mois)</dt>
+            <dd id="settings-sys-inact">—</dd>
+          </dl>
+        </div>
+      </div>
+    </aside>
 
     <div id="demo-guide" class="demo-guide hidden">
       <div class="demo-card">
