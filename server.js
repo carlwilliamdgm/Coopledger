@@ -955,38 +955,12 @@ async function listTransactions(req, res) {
   const dateTo = cleanString(url.searchParams.get('date_to'));
 
   const txResult = await pool.query('SELECT * FROM transactions ORDER BY date DESC');
-  const cotResult = await pool.query(
-    `SELECT
-       ('cot_' || id::text) AS id,
-       date,
-       ('Cotisation (' || mode || ')') AS libelle,
-       montant,
-       hash,
-       explorer,
-       statut,
-       member_id,
-       NULL::integer AS vote_id
-     FROM cotisations
-     WHERE hash IS NOT NULL AND hash <> ''`
-  );
 
-  const rows = [];
-
-  for (const row of txResult.rows) {
+  const rows = txResult.rows.map((row) => {
     const inferredType = row.type
       || (Number(row.montant) < 0 ? 'depense' : 'recette');
-    rows.push({ ...row, type: inferredType, source: 'transaction' });
-  }
-
-  for (const row of cotResult.rows) {
-    rows.push({
-      ...row,
-      type: 'cotisation',
-      source: 'cotisation',
-    });
-  }
-
-  rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return { ...row, type: inferredType };
+  });
 
   const filtered = rows.filter((row) => {
     if (typeFilter && typeFilter !== 'tous' && cleanString(row.type).toLowerCase() !== typeFilter) {
@@ -1536,6 +1510,16 @@ async function createCotisation(req, res) {
     [memberId, amount, cleanMode, stellar.hash, stellar.explorer]
   );
 
+  const cot = result.rows[0];
+  const txId = `cot_${cot.id}`;
+  const libelleTx = `Cotisation (manuel) — ${nomMembre}`;
+  await pool.query(
+    `INSERT INTO transactions (id, libelle, montant, type, hash, explorer, member_id, vote_id)
+     VALUES ($1, $2, $3, 'cotisation', $4, $5, $6, NULL)
+     ON CONFLICT (id) DO NOTHING`,
+    [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
+  );
+
   await createNotification('Cotisation enregistree.', 'cotisation', 'tresorier');
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
@@ -1907,6 +1891,16 @@ async function fedapayWebhook(req, res) {
      VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
     [memberId, amount, 'FedaPay', 'confirmé', stellar.hash, stellar.explorer]
+  );
+
+  const cot = result.rows[0];
+  const txId = `cot_${cot.id}`;
+  const libelleTx = `Cotisation (FedaPay) — ${nomMembre}`;
+  await pool.query(
+    `INSERT INTO transactions (id, libelle, montant, type, hash, explorer, member_id, vote_id)
+     VALUES ($1, $2, $3, 'cotisation', $4, $5, $6, NULL)
+     ON CONFLICT (id) DO NOTHING`,
+    [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
   );
 
   await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier');
@@ -2382,6 +2376,18 @@ function buildDemoDataset() {
     { id: 'tx_demo_1', date: iso(now - 86400000), libelle: 'Vente recolte', montant: 450000, type: 'recette', hash: 'demo_hash_aaaa', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_aaaa', statut: 'scellé', member_id: 1, vote_id: null, source: 'transaction' },
     { id: 'tx_demo_2', date: iso(now - 172800000), libelle: 'Achat engrais', montant: -120000, type: 'depense', hash: 'demo_hash_bbbb', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_bbbb', statut: 'scellé', member_id: 2, vote_id: null, source: 'transaction' },
     { id: 'tx_demo_3', date: iso(now - 3600000), libelle: 'Apport coopératif démo', montant: 80000, type: 'recette', hash: 'demo_hash_cccc', explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_cccc', statut: 'scellé', member_id: 3, vote_id: null, source: 'transaction' },
+    {
+      id: 'cot_1',
+      date: iso(now - 86400000),
+      libelle: 'Cotisation (manuel) — Awa Bamba',
+      montant: 5000,
+      type: 'cotisation',
+      hash: 'demo_hash_cot1',
+      explorer: 'https://stellar.expert/explorer/testnet/tx/demo_hash_cot1',
+      statut: 'scellé',
+      member_id: 5,
+      vote_id: null,
+    },
   ];
 
   const expires = new Date(now + 72 * 3600000);
@@ -2547,33 +2553,42 @@ async function routeDemoApi(req, res, pathname) {
     return sendJson(res, 200, { members: store.members });
   }
   if (req.method === 'GET' && pathname.startsWith('/api/transactions')) {
-    const cotLedger = (store.cotisations || []).filter((row) => cleanString(row.hash)).map((row) => ({
-      id: `cot_${row.id}`,
-      date: row.date,
-      libelle: `Cotisation (${row.mode})`,
-      montant: row.montant,
-      type: 'cotisation',
-      hash: row.hash,
-      explorer: row.explorer || '',
-      statut: row.statut,
-      member_id: row.member_id,
-      vote_id: null,
-      source: 'cotisation',
-    }));
-    const merged = [...store.transactions.map((tx) => ({ ...tx, source: tx.source || 'transaction' })), ...cotLedger]
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
-
     const url = new URL(req.url || '/api/transactions', 'http://localhost');
-    let rows = merged;
     const typeFilter = cleanString(url.searchParams.get('type')).toLowerCase();
     const statutFilter = cleanString(url.searchParams.get('statut')).toLowerCase();
-    if (typeFilter && typeFilter !== 'tous') {
-      rows = rows.filter((row) => cleanString(row.type || (Number(row.montant) < 0 ? 'depense' : 'recette')).toLowerCase() === typeFilter);
-    }
-    if (statutFilter) {
-      rows = rows.filter((row) => cleanString(row.statut).toLowerCase() === statutFilter);
-    }
-    return sendJson(res, 200, { transactions: rows });
+    const dateFrom = cleanString(url.searchParams.get('date_from'));
+    const dateTo = cleanString(url.searchParams.get('date_to'));
+
+    const rows = [...store.transactions]
+      .map((row) => {
+        const inferredType = row.type || (Number(row.montant) < 0 ? 'depense' : 'recette');
+        return { ...row, type: inferredType };
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const filtered = rows.filter((row) => {
+      if (typeFilter && typeFilter !== 'tous' && cleanString(row.type).toLowerCase() !== typeFilter) {
+        return false;
+      }
+      if (statutFilter && normalizeStatutComparable(row.statut) !== normalizeStatutComparable(statutFilter)) {
+        return false;
+      }
+      if (dateFrom) {
+        const t = new Date(row.date).getTime();
+        if (t < new Date(dateFrom).setHours(0, 0, 0, 0)) {
+          return false;
+        }
+      }
+      if (dateTo) {
+        const t = new Date(row.date).getTime();
+        if (t > new Date(dateTo).setHours(23, 59, 59, 999)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    return sendJson(res, 200, { transactions: filtered });
   }
   if (req.method === 'GET' && pathname === '/api/votes') {
     return sendJson(res, 200, { votes: store.votes.map(serializeVote) });
