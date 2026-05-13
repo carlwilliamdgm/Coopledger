@@ -1572,19 +1572,16 @@ async function initierFedapay(req, res) {
     throw new HttpError(response.status, data.error || 'Erreur lors de la creation de la transaction FedaPay.');
   }
 
-  const token = data?.v1?.token || data?.token || data?.payment_token || data?.transaction?.token;
-  const url = data.url || data.payment_url || data.redirect_url || data.transaction?.payment_url;
+  const txData = data['v1/transaction'];
+  const token = txData?.payment_token || txData?.token;
+  const paymentUrl = txData?.payment_url;
 
   if (!token) {
-    console.error('FedaPay token absent dans la reponse API:', JSON.stringify(data));
-    sendJson(res, 502, { error: 'Paiement temporairement indisponible' });
+    sendJson(res, 502, { error: 'Token FedaPay absent' });
     return;
   }
-  if (!url) {
-    throw new HttpError(502, 'Reponse incomplette de FedaPay (URL absente).');
-  }
 
-  sendJson(res, 200, { token, url });
+  sendJson(res, 200, { token, url: paymentUrl });
 }
 
 function timingSafeCompare(valueA, valueB) {
