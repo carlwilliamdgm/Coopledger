@@ -83,7 +83,7 @@ function hidePaiementRetourView() {
 
 function onPaiementRetourCotisationNotification(notification) {
   if (!paiementRetourAwaitingSse) return;
-  if (notification.type !== 'cotisation') return;
+  if (notification.type !== 'cotisation' && notification.type !== 'paiement_confirme') return;
 
   paiementRetourAwaitingSse = false;
   document.getElementById('paiement-retour-progress')?.classList.add('hidden');
@@ -619,6 +619,24 @@ function decodeJwt(token) {
 
 function normalizeRole(role) {
   return String(role || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function filterNotificationsForCurrentUser(notifs) {
+  if (!currentUser) return [];
+  const userNorm = normalizeRole(currentUser.role);
+  if (userNorm === 'admin') return [...(notifs || [])];
+
+  return (notifs || []).filter((n) => {
+    const raw = String(n.destinataires ?? 'tous')
+      .trim()
+      .toLowerCase();
+    if (raw === 'tous' || raw === '') return true;
+    const parts = raw
+      .split(',')
+      .map((s) => normalizeRole(s.trim()))
+      .filter(Boolean);
+    return parts.includes(userNorm);
+  });
 }
 
 function getPermissions(role) {
@@ -1309,7 +1327,8 @@ async function loadProtectedData() {
 async function chargerNotificationsHistorique() {
   try {
     const data = await apiFetch('/api/notifications');
-    notifications = data.notifications || [];
+    const incoming = data.notifications || [];
+    notifications = filterNotificationsForCurrentUser(incoming);
     renderNotifications();
   } catch (error) {
     // ignore
@@ -2013,12 +2032,14 @@ function renderNotifications() {
   const list = document.getElementById('notifications-list');
   if (!list) return;
 
-  if (!notifications.length) {
+  const visible = filterNotificationsForCurrentUser(notifications);
+
+  if (!visible.length) {
     list.innerHTML = '<p>Aucune notification pour le moment.</p>';
     return;
   }
 
-  list.innerHTML = notifications.map(notification => `
+  list.innerHTML = visible.map(notification => `
     <div class="membres-stats">
       <strong>${escapeHtml(notification.type || 'notification')}</strong>
       <p>${escapeHtml(notification.message)}</p>
@@ -2574,7 +2595,7 @@ async function cloturerCandidaturePeriode(vacancyId) {
     await Promise.all([chargerCandidatures(), chargerVotes()]);
     renderVotes();
     renderVotesInDashboard();
-    alert('Période de candidature clôturée.');
+    alert('Période de candidature clôturée. Le vote est maintenant ouvert.');
   } catch (error) {
     alert(error.message || 'Action impossible.');
   }
@@ -2719,7 +2740,9 @@ function parseSseEvent(eventText) {
   try {
     const notification = JSON.parse(line.slice(6));
     onPaiementRetourCotisationNotification(notification);
-    notifications.unshift(notification);
+    if (filterNotificationsForCurrentUser([notification]).length) {
+      notifications.unshift(notification);
+    }
     renderNotifications();
     refreshDataAfterNotification(notification);
   } catch (error) {
@@ -2741,7 +2764,9 @@ function refreshDataAfterNotification(notification) {
     chargerVotes();
   }
   if (notification.type === 'membre') chargerMembres();
-  if (notification.type === 'cotisation') chargerCotisations();
+  if (notification.type === 'cotisation' || notification.type === 'paiement_confirme') {
+    chargerCotisations();
+  }
 }
 
 function scheduleSseReconnect() {

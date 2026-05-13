@@ -601,7 +601,7 @@ async function register(req, res) {
   const member = await createMemberRecord({ nom, username, email, password, role: requestedRole });
   const token = generateToken(member);
 
-  await createNotification(`Nouveau membre inscrit: ${member.nom}`, 'membre', 'secretaire');
+  await createNotification(`Nouveau membre inscrit: ${member.nom}`, 'membre', 'secretaire,admin');
   sendJson(res, 201, { token, member });
 }
 
@@ -612,7 +612,7 @@ async function createMemberByAdmin(req, res) {
   const body = await readBody(req);
   const member = await createMemberRecord(body);
 
-  await createNotification(`Nouveau membre cree par le bureau: ${member.nom}`, 'membre', 'secretaire');
+  await createNotification(`Nouveau membre cree par le bureau: ${member.nom}`, 'membre', 'secretaire,admin');
   sendJson(res, 201, { member });
 }
 
@@ -637,7 +637,7 @@ async function updateMemberStatut(req, res, id) {
     throw new HttpError(404, 'Membre introuvable.');
   }
 
-  await createNotification(`Statut mis a jour (${next}): ${updated.rows[0].nom}`, 'membre', 'secretaire');
+  await createNotification(`Statut mis a jour (${next}): ${updated.rows[0].nom}`, 'membre', 'secretaire,admin');
   sendJson(res, 200, { member: updated.rows[0] });
 }
 
@@ -940,7 +940,7 @@ async function updateMemberRole(req, res, id) {
     throw new HttpError(404, 'Membre introuvable.');
   }
 
-  await createNotification(`Role attribue a ${result.rows[0].nom}: ${cleanRole}`, 'membre', 'tous');
+  await createNotification(`Role attribue a ${result.rows[0].nom}: ${cleanRole}`, 'membre', 'secretaire,admin');
   if (isCallerAdmin) {
     await logAdminAction(`Role ${cleanRole} attribue au membre ${id}`, getRequestIp(req));
   }
@@ -1049,7 +1049,7 @@ async function createTransaction(req, res) {
     );
   }
 
-  await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tresorier,verificateur');
+  await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tous');
   sendJson(res, 201, { transaction: result.rows[0] });
 }
 
@@ -1339,7 +1339,7 @@ async function closeVote(req, res, id, automatedClose = false) {
     await pool.query('UPDATE postes_vacants SET statut = $1 WHERE id = $2', ['pourvu', vote.poste_vacant_id]);
     await pool.query('UPDATE votes SET statut = $1 WHERE id = $2', ['validé', id]);
 
-    await createNotification(`${candidature.nom} obtient le poste ${vote.poste}.`, 'membre', 'tous');
+    await createNotification(`${candidature.nom} obtient le poste ${vote.poste}.`, 'membre', 'secretaire,admin');
     sendJson(res, 200, { winner: candidature.member_id, poste: vote.poste });
     return;
   }
@@ -1397,7 +1397,7 @@ async function closeVote(req, res, id, automatedClose = false) {
       await createNotification(
         `Action à concrétiser : ${vote.titre} — ${budgetNum} FCFA. Créez la transaction associée.`,
         'vote',
-        'tresorier',
+        'tous',
       );
     } else {
       await createNotification(`Vote "${vote.titre}" ${status}.`, 'vote', 'tous');
@@ -1523,7 +1523,7 @@ async function createCotisation(req, res) {
     [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
   );
 
-  await createNotification('Cotisation enregistree.', 'cotisation', 'tresorier');
+  await createNotification('Cotisation enregistree.', 'cotisation', 'tresorier,secretaire');
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 
@@ -1719,7 +1719,7 @@ async function createCandidature(req, res) {
     [cleanPoste, req.user.id, expiresAt]
   );
 
-  await createNotification(`Nouvelle candidature pour le poste ${cleanPoste}.`, 'candidature', 'secretaire');
+  await createNotification(`Nouvelle candidature pour le poste ${cleanPoste}.`, 'candidature', 'tous');
   sendJson(res, 201, { candidature: result.rows[0] });
 }
 
@@ -1906,7 +1906,12 @@ async function fedapayWebhook(req, res) {
     [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
   );
 
-  await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tous');
+  await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier,secretaire');
+  await createNotification(
+    'Votre paiement a été confirmé et scellé sur la blockchain.',
+    'paiement_confirme',
+    'tous',
+  );
   sendJson(res, 201, { cotisation: result.rows[0] });
 }
 
@@ -1931,7 +1936,7 @@ async function createSignalement(req, res, transactionId) {
     throw new HttpError(404, 'Transaction introuvable.');
   }
 
-  await createNotification(cleanMessage, 'signalement', 'verificateur,tresorier');
+  await createNotification(cleanMessage, 'signalement', 'verificateur,tresorier,admin');
   sendJson(res, 201, { success: true });
 }
 
@@ -2005,7 +2010,7 @@ async function rappelerActionsVoteesEnAttente() {
     await createNotification(
       `Rappel : ${row.titre} approuvé depuis ${hours}h, transaction non encore créée.`,
       'vote',
-      'tresorier',
+      'tous',
     );
     await pool.query('UPDATE actions_votees SET dernier_rappel_at = NOW() WHERE id = $1', [row.id]);
   }
@@ -2251,7 +2256,7 @@ async function verifierMembresInactifs() {
   await createNotification(
     `${ids.length} membres mis en inactif automatiquement.`,
     'membre',
-    'secretaire',
+    'secretaire,admin',
   );
 }
 
@@ -2272,7 +2277,7 @@ async function verifierElectionsAutomatiques() {
       const vacancy = await ensureVacancyForPoste(poste);
 
       if (activeMembers < 4) {
-        await createNotification('Minimum 4 membres actifs requis pour ouvrir une élection', 'election', 'secretaire');
+        await createNotification('Minimum 4 membres actifs requis pour ouvrir une élection', 'election', 'tous');
         continue;
       }
 
