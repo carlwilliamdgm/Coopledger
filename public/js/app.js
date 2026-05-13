@@ -1811,7 +1811,14 @@ function renderVotes() {
   page.querySelectorAll('.vote-card').forEach(card => card.remove());
   document.getElementById('proposal-panel')?.classList.add('hidden');
 
-  const electionVotes = votes.filter(vote => vote.type === 'election');
+  const shownElectionVoteIds = new Set(
+    candidatures
+      .filter(v => v.election_vote && v.election_vote.statut === 'ouvert')
+      .map(v => v.election_vote.id),
+  );
+  const electionVotes = votes.filter(vote =>
+    vote.type === 'election' && !shownElectionVoteIds.has(vote.id),
+  );
   const configVotes = votes.filter(vote => String(vote.type || '').toLowerCase() === 'config');
   const decisionVotes = votes.filter((vote) => {
     const t = String(vote.type || 'decision').toLowerCase();
@@ -1882,11 +1889,22 @@ function renderCandidatureCard(vacancy) {
       ${aVote ? '<span class="badge-election">Déjà voté</span>' : ''}
       <p class="vote-info">Candidats</p>
       ${listeCandidats}
+      ${statutPv === 'vote' && electionVote && electionVote.statut === 'ouvert' ? `
+        <div class="vote-actions">
+          <p class="vote-info">Scrutin ouvert — votez pour un candidat :</p>
+          ${renderElectionVoteButtons(electionVote)}
+        </div>
+      ` : ''}
       ${decompteBloc}
       <div class="vote-actions">
         <button class="btn-primary" onclick="mePorterCandidat(${JSON.stringify(vacancy.poste)})" ${peutSePresenter ? '' : 'disabled'}>
           Me porter candidat
         </button>
+        ${isAdmin && statutPv === 'vote' && electionVote?.statut === 'ouvert' ? `
+          <button class="btn-secondary" type="button" onclick="cloturerVote(${electionVote.id})">
+            Clôturer le scrutin
+          </button>
+        ` : ''}
         ${adminClose ? `<button class="btn-secondary" type="button" onclick="cloturerCandidaturePeriode(${vacancy.id})">Clôturer la candidature</button>` : ''}
         ${adminAnnuler ? `<button class="btn-secondary" type="button" onclick="annulerElectionPoste(${vacancy.id})">Annuler l'élection</button>` : ''}
       </div>
