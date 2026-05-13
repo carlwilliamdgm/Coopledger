@@ -21,7 +21,10 @@ function verifyTokenUnsafe(token) {
 }
 
 function normalizeRole(role) {
-  return String(role || 'membre').toLowerCase();
+  return String(role || 'membre')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
 function isRoleExpired(roleExpiresAt) {
