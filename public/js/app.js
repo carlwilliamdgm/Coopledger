@@ -1222,6 +1222,7 @@ function installCotisationsPage() {
           <label for="fedapay-amount">Montant (FCFA)</label>
           <input id="fedapay-amount" type="number" min="1" placeholder="5000" />
           <button id="fedapay-btn" class="btn-primary" type="button" onclick="initierPaiementFedapay()">Payer</button>
+          <p id="fedapay-sandbox-hint" class="fedapay-pay-hint hidden"></p>
           <p id="fedapay-pay-error" class="fedapay-pay-error hidden" role="alert"></p>
         </div>
       </div>
@@ -1246,6 +1247,7 @@ function installCotisationsPage() {
       </div>
     </div>
   `);
+  syncFedapaySandboxHint();
 }
 
 function installNotificationsPage() {
@@ -2728,6 +2730,25 @@ async function enregistrerCotisationManuelle(event) {
     await chargerCotisations();
   } catch (error) {
     alert(error.message || 'Cotisation refusee.');
+  }
+}
+
+async function syncFedapaySandboxHint() {
+  const hintEl = document.getElementById('fedapay-sandbox-hint');
+  if (!hintEl || isDemoSession() || !getToken()) return;
+
+  try {
+    const data = await apiFetch('/api/fedapay/public-key');
+    if (data?.sandbox) {
+      hintEl.textContent = 'Mode sandbox FedaPay : utilisez 64000001 ou 66000001 pour simuler un paiement réussi.';
+      hintEl.classList.remove('hidden');
+    } else {
+      hintEl.textContent = '';
+      hintEl.classList.add('hidden');
+    }
+  } catch (_) {
+    hintEl.textContent = '';
+    hintEl.classList.add('hidden');
   }
 }
 

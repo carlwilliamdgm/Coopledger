@@ -2352,7 +2352,11 @@ async function getFedapayPublicKey(req, res) {
   if (!key) {
     throw new HttpError(500, 'FEDAPAY_PUBLIC_KEY manquant.');
   }
-  sendJson(res, 200, { public_key: key });
+  const apiBase = cleanString(process.env.FEDAPAY_API_BASE_URL) || 'https://sandbox-api.fedapay.com';
+  sendJson(res, 200, {
+    public_key: key,
+    sandbox: key.startsWith('pk_sandbox_') || apiBase.includes('sandbox'),
+  });
 }
 
 async function computeMonthlyReport() {

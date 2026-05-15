@@ -1309,6 +1309,13 @@ table td {
   color: #f87171;
 }
 
+.fedapay-pay-hint {
+  flex-basis: 100%;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--cl-muted, #8b8fa8);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .settings-backdrop,
   .settings-panel {
