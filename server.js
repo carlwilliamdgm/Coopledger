@@ -1793,6 +1793,60 @@ async function fetchFedapayTransactionForWebhook(fedapayTransactionId) {
   return extractFedapayTransaction(response.data);
 }
 
+async function processFedapayCotisation(fedapayTxId, memberId, amount) {
+  const [lockK1, lockK2] = fedapayAdvisoryLockKeys(fedapayTxId);
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock($1, $2)', [lockK1, lockK2]);
+
+    const existing = await client.query('SELECT * FROM cotisations WHERE fedapay_transaction_id = $1', [fedapayTxId]);
+    if (existing.rowCount > 0) {
+      console.log('FedaPay webhook duplicate:', fedapayTxId);
+      return existing.rows[0];
+    }
+
+    const memberRes = await client.query('SELECT nom FROM members WHERE id = $1', [memberId]);
+    const nomMembre = cleanString(memberRes.rows[0]?.nom) || `membre_${memberId}`;
+    const libelleStellar = `Cotisation_FedaPay_${nomMembre.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}_${memberId}`;
+
+    let stellar;
+    try {
+      stellar = await transactionService.enregistrerTransaction(libelleStellar, amount);
+    } catch (err) {
+      console.error('Echec du scellement Stellar pour webhook FedaPay:', err);
+      throw err;
+    }
+
+    const result = await client.query(
+      `INSERT INTO cotisations (member_id, montant, mode, statut, hash, explorer, fedapay_transaction_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [memberId, amount, 'FedaPay', 'confirmé', stellar.hash, stellar.explorer, fedapayTxId],
+    );
+
+    const cot = result.rows[0];
+    const txId = `cot_${cot.id}`;
+    const libelleTx = `Cotisation (FedaPay) — ${nomMembre}`;
+    await client.query(
+      `INSERT INTO transactions (id, libelle, montant, type, hash, explorer, member_id, vote_id)
+       VALUES ($1, $2, $3, 'cotisation', $4, $5, $6, NULL)
+       ON CONFLICT (id) DO NOTHING`,
+      [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
+    );
+
+    await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier,secretaire');
+    await createNotification(
+      'Votre paiement a été confirmé et scellé sur la blockchain.',
+      'paiement_confirme',
+      'tous',
+    );
+    return result.rows[0];
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1, $2)', [lockK1, lockK2]).catch(() => {});
+    client.release();
+  }
+}
+
 async function listCandidatures(req, res) {
   await requireAuth(req, res);
   const memberId = Number(req.user.id);
@@ -2100,67 +2154,29 @@ async function fedapayWebhook(req, res) {
     return;
   }
 
-  const memberId = parsePositiveInteger(
-    payload.metadata?.member_id
-      || payload.custom_metadata?.member_id
-      || payload.member_id
-      || transactionPayload.metadata?.member_id
-      || transactionPayload.custom_metadata?.member_id,
-    'member_id',
-  );
-  const amount = parsePositiveInteger(payload.montant || payload.amount || transactionPayload.amount, 'montant');
-
-  const [lockK1, lockK2] = fedapayAdvisoryLockKeys(fedapayTxId);
-  const client = await pool.connect();
+  let memberId;
+  let amount;
   try {
-    await client.query('SELECT pg_advisory_lock($1, $2)', [lockK1, lockK2]);
-
-    const existing = await client.query('SELECT * FROM cotisations WHERE fedapay_transaction_id = $1', [fedapayTxId]);
-    if (existing.rowCount > 0) {
-      sendJson(res, 200, { duplicate: true, cotisation: existing.rows[0] });
-      return;
-    }
-
-    const memberRes = await client.query('SELECT nom FROM members WHERE id = $1', [memberId]);
-    const nomMembre = cleanString(memberRes.rows[0]?.nom) || `membre_${memberId}`;
-    const libelleStellar = `Cotisation_FedaPay_${nomMembre.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}_${memberId}`;
-
-    let stellar;
-    try {
-      stellar = await transactionService.enregistrerTransaction(libelleStellar, amount);
-    } catch (err) {
-      console.error(err);
-      throw new HttpError(502, 'Echec du scellement Stellar.');
-    }
-
-    const result = await client.query(
-      `INSERT INTO cotisations (member_id, montant, mode, statut, hash, explorer, fedapay_transaction_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [memberId, amount, 'FedaPay', 'confirmé', stellar.hash, stellar.explorer, fedapayTxId],
+    memberId = parsePositiveInteger(
+      payload.metadata?.member_id
+        || payload.custom_metadata?.member_id
+        || payload.member_id
+        || transactionPayload.metadata?.member_id
+        || transactionPayload.custom_metadata?.member_id,
+      'member_id',
     );
-
-    const cot = result.rows[0];
-    const txId = `cot_${cot.id}`;
-    const libelleTx = `Cotisation (FedaPay) — ${nomMembre}`;
-    await client.query(
-      `INSERT INTO transactions (id, libelle, montant, type, hash, explorer, member_id, vote_id)
-       VALUES ($1, $2, $3, 'cotisation', $4, $5, $6, NULL)
-       ON CONFLICT (id) DO NOTHING`,
-      [txId, libelleTx, amount, stellar.hash, stellar.explorer, memberId],
-    );
-
-    await createNotification('Cotisation FedaPay confirmee.', 'cotisation', 'tresorier,secretaire');
-    await createNotification(
-      'Votre paiement a été confirmé et scellé sur la blockchain.',
-      'paiement_confirme',
-      'tous',
-    );
-    sendJson(res, 201, { cotisation: result.rows[0] });
-  } finally {
-    await client.query('SELECT pg_advisory_unlock($1, $2)', [lockK1, lockK2]).catch(() => {});
-    client.release();
+    amount = parsePositiveInteger(payload.montant || payload.amount || transactionPayload.amount, 'montant');
+  } catch (err) {
+    console.warn('FedaPay webhook ignore: donnees de cotisation incompletes.', err.message);
+    sendJson(res, 200, { success: true, ignored: true, reason: 'invalid_cotisation_data' });
+    return;
   }
+
+  sendJson(res, 200, { success: true, accepted: true, transaction_id: fedapayTxId });
+  setImmediate(() => {
+    processFedapayCotisation(fedapayTxId, memberId, amount)
+      .catch((err) => console.error('Traitement asynchrone webhook FedaPay echoue:', err));
+  });
 }
 
 async function myCotisations(req, res) {
