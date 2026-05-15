@@ -2119,8 +2119,10 @@ async function fedapayWebhook(req, res) {
   let payload;
   try {
     payload = rawBody ? JSON.parse(rawBody) : {};
-  } catch {
-    throw new HttpError(400, 'JSON du webhook invalide.');
+  } catch (err) {
+    console.warn('FedaPay webhook ignore: JSON invalide.', rawBody);
+    sendJson(res, 200, { success: true, ignored: true, reason: 'invalid_json' });
+    return;
   }
   console.log('FedaPay webhook headers:', JSON.stringify(req.headers, null, 2));
   console.log('FedaPay webhook payload:', JSON.stringify(payload, null, 2));
