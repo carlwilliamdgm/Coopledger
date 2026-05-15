@@ -26,6 +26,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
 /** @type {Map<import('http').ServerResponse, { role: string }>} */
 const sseClients = new Map();
+let fedapayRetryInProgress = false;
 
 let webPushConfigured = false;
 /** @type {string|null} */
@@ -1800,7 +1801,7 @@ async function processFedapayCotisation(fedapayTxId, memberId, amount) {
     await client.query('SELECT pg_advisory_lock($1, $2)', [lockK1, lockK2]);
 
     const existing = await client.query('SELECT * FROM cotisations WHERE fedapay_transaction_id = $1', [fedapayTxId]);
-    if (existing.rowCount > 0) {
+    if (existing.rowCount > 0 && existing.rows[0].statut === 'confirmé' && existing.rows[0].hash) {
       console.log('FedaPay webhook duplicate:', fedapayTxId);
       return existing.rows[0];
     }
@@ -1809,19 +1810,41 @@ async function processFedapayCotisation(fedapayTxId, memberId, amount) {
     const nomMembre = cleanString(memberRes.rows[0]?.nom) || `membre_${memberId}`;
     const libelleStellar = `Cotisation_FedaPay_${nomMembre.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_')}_${memberId}`;
 
+    const pending = await client.query(
+      `INSERT INTO cotisations (member_id, montant, mode, statut, fedapay_transaction_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (fedapay_transaction_id) WHERE fedapay_transaction_id IS NOT NULL
+       DO UPDATE SET
+         member_id = EXCLUDED.member_id,
+         montant = EXCLUDED.montant,
+         mode = EXCLUDED.mode,
+         statut = EXCLUDED.statut,
+         last_error = NULL
+       RETURNING *`,
+      [memberId, amount, 'FedaPay', 'scellage_en_cours', fedapayTxId],
+    );
+    const pendingCotisation = pending.rows[0];
+
     let stellar;
     try {
       stellar = await transactionService.enregistrerTransaction(libelleStellar, amount);
     } catch (err) {
       console.error('Echec du scellement Stellar pour webhook FedaPay:', err);
+      await client.query(
+        `UPDATE cotisations
+         SET statut = $1, last_error = $2
+         WHERE id = $3`,
+        ['erreur_scellage', cleanString(err.message).slice(0, 500), pendingCotisation.id],
+      );
       throw err;
     }
 
     const result = await client.query(
-      `INSERT INTO cotisations (member_id, montant, mode, statut, hash, explorer, fedapay_transaction_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `UPDATE cotisations
+       SET statut = $1, hash = $2, explorer = $3, last_error = NULL, processed_at = NOW()
+       WHERE id = $4
        RETURNING *`,
-      [memberId, amount, 'FedaPay', 'confirmé', stellar.hash, stellar.explorer, fedapayTxId],
+      ['confirmé', stellar.hash, stellar.explorer, pendingCotisation.id],
     );
 
     const cot = result.rows[0];
@@ -1845,6 +1868,44 @@ async function processFedapayCotisation(fedapayTxId, memberId, amount) {
     await client.query('SELECT pg_advisory_unlock($1, $2)', [lockK1, lockK2]).catch(() => {});
     client.release();
   }
+}
+
+async function retryPendingFedapayCotisations() {
+  if (fedapayRetryInProgress) {
+    return;
+  }
+  fedapayRetryInProgress = true;
+  try {
+    const pending = await pool.query(
+      `SELECT id, fedapay_transaction_id, member_id, montant
+       FROM cotisations
+       WHERE fedapay_transaction_id IS NOT NULL
+         AND hash IS NULL
+         AND statut IN ('scellage_en_cours', 'erreur_scellage')
+       ORDER BY date ASC
+       LIMIT 10`,
+    );
+
+    for (const row of pending.rows) {
+      await processFedapayCotisation(row.fedapay_transaction_id, row.member_id, Number(row.montant))
+        .catch((err) => console.error(`Reprise cotisation FedaPay ${row.id} echouee:`, err));
+    }
+  } finally {
+    fedapayRetryInProgress = false;
+  }
+}
+
+function startFedapayCotisationRetryLoop() {
+  const retry = () => retryPendingFedapayCotisations()
+    .catch((err) => console.error('Reprise cotisations FedaPay echouee:', err));
+  Promise.resolve(pool.ready).then(retry).catch((err) => console.error('Reprise cotisations FedaPay echouee:', err));
+  const timer = setInterval(() => {
+    Promise.resolve(pool.ready).then(retry).catch((err) => console.error('Reprise cotisations FedaPay echouee:', err));
+  }, 5 * 60 * 1000);
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+  return timer;
 }
 
 async function processFedapayWebhookPayload(payload, signatureHeader, rawBody) {
@@ -3102,3 +3163,4 @@ httpServer.listen(PORT, () => {
 });
 
 planifierElectionsAutomatiques();
+startFedapayCotisationRetryLoop();

@@ -100,6 +100,8 @@ async function initDatabase() {
     ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS hash TEXT;
     ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS explorer TEXT;
     ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS fedapay_transaction_id TEXT;
+    ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS last_error TEXT;
+    ALTER TABLE cotisations ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP;
 
     CREATE UNIQUE INDEX IF NOT EXISTS cotisations_fedapay_transaction_id_idx
       ON cotisations (fedapay_transaction_id)
