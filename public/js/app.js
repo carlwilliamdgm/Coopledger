@@ -1010,7 +1010,7 @@ function installTransactionForm() {
         <input id="transaction-libelle" type="text">
         <label for="transaction-montant">Montant (FCFA, entier positif)</label>
         <input id="transaction-montant" type="number" min="1" step="1">
-        <label for="transaction-vote-select">Vote validé associé</label>
+        <label id="transaction-vote-label" for="transaction-vote-select">Vote validé associé</label>
         <select id="transaction-vote-select"></select>
       </div>
       <div id="txn-cotisation-block" class="hidden">
@@ -1672,17 +1672,21 @@ function renderTransactionVoteOptions() {
   const select = document.getElementById('transaction-vote-select');
   if (!select) return;
 
+  const flow = document.getElementById('txn-flow-type')?.value || '';
   const validated = votes.filter((vote) => {
     if (vote.statut !== 'validé') return false;
     const t = String(vote.type || 'decision').toLowerCase();
     return t === 'decision';
   });
+  const placeholder = flow === 'recette'
+    ? '<option value="">Aucun vote associé</option>'
+    : '<option value="">Choisir un vote validé</option>';
+  const options = validated.map(vote => `
+    <option value="${vote.id}">
+      ${escapeHtml(vote.titre)} — budget ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA
+    </option>`.trim());
   select.innerHTML = validated.length
-    ? validated.map(vote => `
-        <option value="${vote.id}">
-          ${escapeHtml(vote.titre)} — budget ${Number(vote.budget || 0).toLocaleString('fr-FR')} FCFA
-        </option>`.trim())
-      .join('')
+    ? [placeholder, ...options].join('')
     : '<option value="">Aucun vote validé</option>';
 }
 
@@ -2122,18 +2126,19 @@ function renderDashboard() {
   const balance = transactions.reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthlyTransactions = transactions.filter(transaction => String(transaction.date || '').slice(0, 7) === currentMonth);
-  const monthlyCotisations = cotisations.filter(cotisation => String(cotisation.date || '').slice(0, 7) === currentMonth);
-  const contributions = monthlyCotisations.reduce((total, cotisation) => total + Number(cotisation.montant || 0), 0);
+  const contributions = monthlyTransactions
+    .filter(transaction => transaction.type === 'cotisation' && Number(transaction.montant || 0) > 0)
+    .reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
   const expenses = monthlyTransactions
     .filter(transaction => Number(transaction.montant || 0) < 0)
-    .reduce((total, transaction) => total + Number(transaction.montant || 0), 0);
+    .reduce((total, transaction) => total + Math.abs(Number(transaction.montant || 0)), 0);
   const openVotes = votes.filter(vote => vote.statut === 'ouvert').length;
   const closedVotes = votes.filter(vote => vote.statut !== 'ouvert').length;
   const activeMembers = members.filter(m => m.statut === 'Actif').length;
 
   document.getElementById('coop-balance').textContent = formatAbsoluteMontant(balance);
   document.getElementById('monthly-contributions').textContent = formatAbsoluteMontant(contributions);
-  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(Math.abs(expenses));
+  document.getElementById('monthly-expenses').textContent = formatAbsoluteMontant(expenses);
   document.getElementById('active-members-count').textContent = activeMembers;
   document.getElementById('open-votes-count').textContent = openVotes;
   document.getElementById('proof-count').textContent = transactions.length;
@@ -2212,15 +2217,19 @@ function majChampsFluxFinancier() {
   const lib = document.getElementById('transaction-libelle');
   const m = document.getElementById('transaction-montant');
   const vs = document.getElementById('transaction-vote-select');
+  const vl = document.getElementById('transaction-vote-label');
   if (flow === 'recette' || flow === 'depense') {
     if (lib) lib.required = true;
     if (m) m.required = true;
-    if (vs) vs.required = true;
+    if (vs) vs.required = flow === 'depense';
+    if (vl) vl.textContent = flow === 'recette' ? 'Vote validé associé (optionnel)' : 'Vote validé associé';
   } else {
     if (lib) lib.required = false;
     if (m) m.required = false;
     if (vs) vs.required = false;
+    if (vl) vl.textContent = 'Vote validé associé';
   }
+  renderTransactionVoteOptions();
 }
 
 async function enregistrerTransaction() {
@@ -2301,13 +2310,16 @@ async function soumettreFluxFinancier(event) {
     alert('Le montant doit être un entier positif.');
     return;
   }
-  if (!Number.isInteger(voteId) || voteId <= 0) {
+  const type = flow === 'depense' ? 'depense' : 'recette';
+  if (type === 'depense' && (!Number.isInteger(voteId) || voteId <= 0)) {
     alert('Sélectionnez un vote validé.');
     return;
   }
 
-  const type = flow === 'depense' ? 'depense' : 'recette';
-  const payload = { libelle, montant: montantPositif, vote_id: voteId, type };
+  const payload = { libelle, montant: montantPositif, type };
+  if (type === 'depense' || voteId > 0) {
+    payload.vote_id = voteId;
+  }
 
   const userRole = currentUser?.role;
   if (!checkPermission('createTransaction', userRole)) {

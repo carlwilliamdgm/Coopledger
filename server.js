@@ -1100,7 +1100,8 @@ async function createTransaction(req, res) {
   const { libelle, montant, member_id, vote_id, type } = await readBody(req);
   const cleanLibelle = cleanString(libelle);
   const txType = cleanString(type).toLowerCase() || 'recette';
-  const voteId = parsePositiveInteger(vote_id, 'vote_id');
+  const hasVoteId = vote_id !== undefined && vote_id !== null && cleanString(vote_id) !== '';
+  const voteId = hasVoteId ? parsePositiveInteger(vote_id, 'vote_id') : null;
 
   if (!cleanLibelle) {
     throw new HttpError(400, 'libelle est obligatoire.');
@@ -1113,9 +1114,15 @@ async function createTransaction(req, res) {
   const amountAbs = parseNonZeroInteger(montant, 'montant');
   const amount = txType === 'depense' ? -Math.abs(amountAbs) : Math.abs(amountAbs);
 
-  const vote = await pool.query('SELECT * FROM votes WHERE id = $1', [voteId]);
-  if (!vote.rows[0] || vote.rows[0].statut !== 'validé') {
-    throw new HttpError(400, 'Le vote associe doit etre valide.');
+  if (txType === 'depense' && !voteId) {
+    throw new HttpError(400, 'vote_id est obligatoire pour une depense.');
+  }
+
+  if (voteId) {
+    const vote = await pool.query('SELECT * FROM votes WHERE id = $1', [voteId]);
+    if (!vote.rows[0] || vote.rows[0].statut !== 'validé') {
+      throw new HttpError(400, 'Le vote associe doit etre valide.');
+    }
   }
 
   let stellar;
@@ -1135,21 +1142,23 @@ async function createTransaction(req, res) {
     [id, cleanLibelle, amount, txType, hash, explorer, member_id || null, voteId]
   );
 
-  const avUpdate = await pool.query(
-    `UPDATE actions_votees
-     SET statut = 'concrétisé', confirme_par = $1, confirme_at = NOW()
-     WHERE vote_id = $2 AND statut = 'en_attente'
-     RETURNING titre`,
-    [Number(req.user.id), voteId],
-  );
-
-  if (avUpdate.rowCount > 0) {
-    const titreAction = cleanString(avUpdate.rows[0]?.titre) || cleanLibelle;
-    await createNotification(
-      `Action concrétisée : ${titreAction} — transaction scellée sur Stellar. Hash : ${hash}`,
-      'transaction',
-      'tous',
+  if (voteId) {
+    const avUpdate = await pool.query(
+      `UPDATE actions_votees
+       SET statut = 'concrétisé', confirme_par = $1, confirme_at = NOW()
+       WHERE vote_id = $2 AND statut = 'en_attente'
+       RETURNING titre`,
+      [Number(req.user.id), voteId],
     );
+
+    if (avUpdate.rowCount > 0) {
+      const titreAction = cleanString(avUpdate.rows[0]?.titre) || cleanLibelle;
+      await createNotification(
+        `Action concrétisée : ${titreAction} — transaction scellée sur Stellar. Hash : ${hash}`,
+        'transaction',
+        'tous',
+      );
+    }
   }
 
   await createNotification(`Transaction scellee: ${cleanLibelle}`, 'transaction', 'tous');
