@@ -933,18 +933,32 @@ async function initConfig(req, res) {
   const coopName = cleanString(nom_coop || nomCoop);
   const mandateDuration = parsePositiveInteger(duree_mandat || dureeMandat, 'duree_mandat');
   const uniqueKey = crypto.randomBytes(32).toString('hex');
-  const stellarAccount = Keypair.random();
+  let stellarAccount;
+  const envSecret = cleanString(process.env.STELLAR_SECRET
+    || process.env.STELLAR_SECRET_KEY
+    || process.env.SECRET_KEY);
+
+  if (envSecret) {
+    stellarAccount = Keypair.fromSecret(envSecret);
+  } else {
+    stellarAccount = Keypair.random();
+    console.warn(
+      'STELLAR_SECRET non defini — keypair aleatoire genere. '
+      + 'Definissez STELLAR_SECRET dans Railway pour eviter la perte des cles.'
+    );
+  }
 
   if (!coopName) {
     throw new HttpError(400, 'nom_coop est obligatoire.');
   }
 
+  let stellarPublicKey = stellarAccount.publicKey();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO config (cle, valeur)
-       VALUES ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10)`,
+       VALUES ($1, $2), ($3, $4), ($5, $6)`,
       [
         'nom_coop',
         coopName,
@@ -952,12 +966,34 @@ async function initConfig(req, res) {
         String(mandateDuration),
         'cle_unique',
         uniqueKey,
-        'stellar_public_key',
-        stellarAccount.publicKey(),
-        'stellar_secret_key',
-        stellarAccount.secret(),
       ]
     );
+
+    const existingStellarSecret = await client.query(
+      `SELECT valeur FROM config WHERE cle = $1 LIMIT 1`,
+      ['stellar_secret_key'],
+    );
+    if (existingStellarSecret.rowCount > 0) {
+      const existingStellarPublic = await client.query(
+        `SELECT valeur FROM config WHERE cle = $1 LIMIT 1`,
+        ['stellar_public_key'],
+      );
+      stellarPublicKey = cleanString(existingStellarPublic.rows[0]?.valeur);
+      if (!stellarPublicKey) {
+        stellarPublicKey = Keypair.fromSecret(existingStellarSecret.rows[0].valeur).publicKey();
+      }
+    } else {
+      await client.query(
+        `INSERT INTO config (cle, valeur)
+         VALUES ($1, $2), ($3, $4)`,
+        [
+          'stellar_public_key',
+          stellarAccount.publicKey(),
+          'stellar_secret_key',
+          stellarAccount.secret(),
+        ],
+      );
+    }
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -972,7 +1008,7 @@ async function initConfig(req, res) {
       nom_coop: coopName,
       duree_mandat: mandateDuration,
       cle_unique: uniqueKey,
-      stellar_public_key: stellarAccount.publicKey(),
+      stellar_public_key: stellarPublicKey,
     },
   });
 }
