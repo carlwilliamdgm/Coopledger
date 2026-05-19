@@ -55,7 +55,13 @@ async function loadStellarKeypairFromConfig() {
     );
   }
 
-  secret = secret || cleanString(process.env.STELLAR_SECRET_KEY) || cleanString(process.env.SECRET_KEY);
+  const envSecretRaw = process.env.STELLAR_SECRET
+    ?? process.env.STELLAR_SECRET_KEY
+    ?? process.env.SECRET_KEY;
+  if (!secret && envSecretRaw != null && !cleanString(envSecretRaw)) {
+    throw new Error('Cle Stellar secrete vide apres normalisation (config ou variables d environnement).');
+  }
+  secret = secret || cleanString(envSecretRaw);
   publicKey = publicKey || cleanString(process.env.STELLAR_PUBLIC_KEY) || cleanString(process.env.PUBLIC_KEY);
 
   if (!secret) {

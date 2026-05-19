@@ -553,6 +553,15 @@ function tokenIsPersistent() {
   return localStorage.getItem(TOKEN_KEY) !== null;
 }
 
+function startButtonRequest(button = document.activeElement) {
+  const btn = button?.tagName === 'BUTTON' ? button : null;
+  if (btn?.disabled) return null;
+  if (btn) btn.disabled = true;
+  return () => {
+    if (btn) btn.disabled = false;
+  };
+}
+
 function clearSession() {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
@@ -707,7 +716,7 @@ function getPermissions(role) {
     canEditCoopConfig: isAdmin,
     isPresident: normalized === 'president',
     canVerify: normalized === 'verificateur',
-    canViewReport: ['president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
+    canViewReport: ['admin', 'president', 'tresorier', 'tresoriere', 'verificateur'].includes(normalized),
     isAdmin,
     isDemo: false,
   };
@@ -1430,6 +1439,8 @@ async function attribuerRoleDepuisSetup(memberId) {
     showPermissionError('updateMembreRole', userRole);
     return;
   }
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     const role = document.getElementById(`setup-role-${memberId}`)?.value;
     await apiFetch(`/api/members/${memberId}/role`, {
@@ -1440,6 +1451,8 @@ async function attribuerRoleDepuisSetup(memberId) {
     renderSetupMembersList();
   } catch (error) {
     alert(error.message || 'Attribution impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -1489,6 +1502,8 @@ async function enregistrerConfigCle(cle) {
       : 'cfg-inactivite';
   const el = document.getElementById(inputId);
   const valeur = el?.value;
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/config/${encodeURIComponent(cle)}`, {
       method: 'PUT',
@@ -1498,6 +1513,8 @@ async function enregistrerConfigCle(cle) {
     await chargerConfig();
   } catch (error) {
     alert(error.message || 'Erreur lors de l’enregistrement.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -1632,8 +1649,14 @@ async function chargerTransactions() {
   }
 }
 
-function appliquerFiltresTransactions() {
-  chargerTransactions();
+async function appliquerFiltresTransactions() {
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
+  try {
+    await chargerTransactions();
+  } finally {
+    restoreButton();
+  }
 }
 
 async function chargerMembres() {
@@ -2388,6 +2411,7 @@ async function flushPendingTransactions() {
 
   const pending = getPendingTransactions();
   if (!pending.length) return;
+  await refreshSession({ silent: true });
   if (!checkPermission('createTransaction', currentUser?.role)) {
     sessionStorage.removeItem(PENDING_TRANSACTIONS_KEY);
     updateNetworkStatus();
@@ -2441,6 +2465,8 @@ async function suggererOperation() {
 
   const duree = Number(prompt('Duree du vote en heures (minimum 72) :', '72') || 72);
 
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch('/api/votes', {
       method: 'POST',
@@ -2449,6 +2475,8 @@ async function suggererOperation() {
     await chargerVotes();
   } catch (error) {
     alert(error.message || 'Creation du vote impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2461,6 +2489,11 @@ async function voter(voteId, choix) {
   const flightKey = String(voteId);
   if (voteSubmissionInFlight.has(flightKey)) return;
   voteSubmissionInFlight.add(flightKey);
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) {
+    voteSubmissionInFlight.delete(flightKey);
+    return;
+  }
 
   try {
     await apiFetch(`/api/votes/${voteId}/vote`, {
@@ -2473,6 +2506,7 @@ async function voter(voteId, choix) {
     alert(error.message || 'Vote refuse.');
   } finally {
     voteSubmissionInFlight.delete(flightKey);
+    restoreButton();
   }
 }
 
@@ -2484,6 +2518,11 @@ async function cloturerVote(voteId) {
   const flightKey = `close-${voteId}`;
   if (voteSubmissionInFlight.has(flightKey)) return;
   voteSubmissionInFlight.add(flightKey);
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) {
+    voteSubmissionInFlight.delete(flightKey);
+    return;
+  }
   try {
     await apiFetch(`/api/votes/${voteId}/close`, {
       method: 'POST',
@@ -2495,6 +2534,7 @@ async function cloturerVote(voteId) {
     alert(error.message || 'Clôture impossible.');
   } finally {
     voteSubmissionInFlight.delete(flightKey);
+    restoreButton();
   }
 }
 
@@ -2510,6 +2550,8 @@ async function prolongerVoteDepuisCarte(voteId) {
     alert('Nombre d\'heures invalide.');
     return;
   }
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/votes/${voteId}/prolong`, {
       method: 'POST',
@@ -2518,6 +2560,8 @@ async function prolongerVoteDepuisCarte(voteId) {
     await chargerVotes();
   } catch (error) {
     alert(error.message || 'Prolongation impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2525,11 +2569,15 @@ async function annulerVote(voteId) {
   if (!confirm('Annuler cette consultation ?')) {
     return;
   }
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/votes/${voteId}/annuler`, { method: 'POST' });
     await chargerVotes();
   } catch (error) {
     alert(error.message || 'Annulation impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2540,6 +2588,7 @@ async function attribuerRole(memberId) {
     return;
   }
 
+  let restoreButton = null;
   try {
     const role = document.getElementById(`member-role-${memberId}`)?.value;
     if (!role) throw new Error('Role manquant.');
@@ -2553,6 +2602,8 @@ async function attribuerRole(memberId) {
       payload.vote_id = voteId;
     }
 
+    restoreButton = startButtonRequest();
+    if (!restoreButton) return;
     const data = await apiFetch(`/api/members/${memberId}/role`, {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -2564,21 +2615,45 @@ async function attribuerRole(memberId) {
     await chargerMembres();
   } catch (error) {
     alert(error.message || 'Attribution impossible.');
+  } finally {
+    if (restoreButton) restoreButton();
   }
 }
 
-async function refreshSession() {
+async function refreshSession(options = {}) {
+  const silent = options?.silent === true;
   const token = getToken();
   if (!token) return;
+  const restoreButton = silent ? (() => {}) : startButtonRequest();
+  if (!restoreButton) return;
   try {
     const data = await apiFetch('/api/auth/me');
     if (data.token) {
       setToken(data.token, tokenIsPersistent());
-      openSessionFromToken(data.token);
-      showAppToast('Session actualisée.');
+      if (silent) {
+        const decoded = decodeJwt(data.token);
+        if (!decoded || (decoded.exp && decoded.exp * 1000 <= Date.now())) {
+          handleAuthExpired();
+          return;
+        }
+        currentUser = {
+          ...decoded,
+          name: decoded.nom,
+          permissions: getPermissions(decoded.role),
+        };
+        document.getElementById('profile-name').textContent = currentUser.nom;
+        document.getElementById('profile-role').textContent = currentUser.role;
+        document.getElementById('profile-description').textContent = getProfileDescription(currentUser.role);
+        applyPermissions();
+      } else {
+        openSessionFromToken(data.token);
+      }
+      if (!silent) showAppToast('Session actualisée.');
     }
   } catch (_) {
-    showAppToast('Reconnectez-vous pour actualiser vos permissions.');
+    if (!silent) showAppToast('Reconnectez-vous pour actualiser vos permissions.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2589,6 +2664,7 @@ async function resetPassword(memberId) {
     return;
   }
 
+  let restoreButton = null;
   try {
     const input = document.getElementById(`member-resetpwd-${memberId}`);
     const nouveau_password = input?.value || '';
@@ -2597,6 +2673,8 @@ async function resetPassword(memberId) {
       return;
     }
 
+    restoreButton = startButtonRequest();
+    if (!restoreButton) return;
     await apiFetch(`/api/members/${memberId}/reset-password`, {
       method: 'POST',
       body: JSON.stringify({ nouveau_password }),
@@ -2607,6 +2685,8 @@ async function resetPassword(memberId) {
     alert('Mot de passe réinitialisé.');
   } catch (error) {
     alert(error.message || 'Réinitialisation impossible.');
+  } finally {
+    if (restoreButton) restoreButton();
   }
 }
 
@@ -2616,6 +2696,8 @@ async function basculerStatutMembre(memberId, statut) {
     showPermissionError('updateMembreStatut', userRole);
     return;
   }
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/members/${memberId}/statut`, {
       method: 'POST',
@@ -2624,6 +2706,8 @@ async function basculerStatutMembre(memberId, statut) {
     await chargerMembres();
   } catch (error) {
     alert(error.message || 'Mise à jour impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2712,12 +2796,20 @@ async function creerMembreAdmin(event) {
   }
 }
 
-function terminerInitialisation() {
-  showPage('dashboard');
-  loadProtectedData();
+async function terminerInitialisation() {
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
+  try {
+    showPage('dashboard');
+    await loadProtectedData();
+  } finally {
+    restoreButton();
+  }
 }
 
 async function mePorterCandidat(poste) {
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch('/api/candidatures', {
       method: 'POST',
@@ -2727,6 +2819,8 @@ async function mePorterCandidat(poste) {
     alert('Candidature enregistree.');
   } catch (error) {
     alert(error.message || 'Candidature refusee.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2736,6 +2830,8 @@ async function cloturerCandidaturePeriode(vacancyId) {
     showPermissionError('adminActions', userRole);
     return;
   }
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/candidatures/${vacancyId}/close`, { method: 'POST' });
     await Promise.all([chargerCandidatures(), chargerVotes()]);
@@ -2744,6 +2840,8 @@ async function cloturerCandidaturePeriode(vacancyId) {
     alert('Période de candidature clôturée. Le vote est maintenant ouvert.');
   } catch (error) {
     alert(error.message || 'Action impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2754,6 +2852,8 @@ async function annulerElectionPoste(vacancyId) {
     return;
   }
   if (!window.confirm('Annuler cette élection ?')) return;
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     await apiFetch(`/api/candidatures/${vacancyId}/annuler`, { method: 'POST' });
     await Promise.all([chargerCandidatures(), chargerVotes()]);
@@ -2762,6 +2862,8 @@ async function annulerElectionPoste(vacancyId) {
     alert('Élection annulée.');
   } catch (error) {
     alert(error.message || 'Action impossible.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2774,6 +2876,9 @@ async function enregistrerCotisationManuelle(event) {
     return;
   }
 
+  const submitBtn = event.target?.querySelector?.('button[type="submit"]');
+  const restoreButton = startButtonRequest(submitBtn);
+  if (!restoreButton) return;
   try {
     await apiFetch('/api/cotisations', {
       method: 'POST',
@@ -2787,6 +2892,8 @@ async function enregistrerCotisationManuelle(event) {
     await chargerCotisations();
   } catch (error) {
     alert(error.message || 'Cotisation refusee.');
+  } finally {
+    restoreButton();
   }
 }
 
@@ -2977,6 +3084,8 @@ function updateNetworkStatus() {
 }
 
 async function lancerDemo() {
+  const restoreButton = startButtonRequest();
+  if (!restoreButton) return;
   try {
     const data = await fetch('/api/demo/start', { method: 'POST' }).then(async (response) => {
       const json = await response.json().catch(() => ({}));
@@ -2992,6 +3101,8 @@ async function lancerDemo() {
     openSessionFromToken(data.token);
   } catch (error) {
     alert(error.message || 'Impossible de lancer la démonstration.');
+  } finally {
+    restoreButton();
   }
 }
 

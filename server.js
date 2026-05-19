@@ -1559,10 +1559,25 @@ async function closeVote(req, res, id, automatedClose = false) {
        WHERE id = $3`,
       [vote.poste, expiresAt, candidature.member_id]
     );
+    const electedMember = await pool.query(
+      `SELECT id, nom, username, email, role, role_expires_at, statut, created_at
+       FROM members
+       WHERE id = $1`,
+      [candidature.member_id]
+    );
+    const elected = electedMember.rows[0];
     await pool.query('UPDATE postes_vacants SET statut = $1 WHERE id = $2', ['pourvu', vote.poste_vacant_id]);
     await pool.query('UPDATE votes SET statut = $1 WHERE id = $2', ['validé', id]);
 
     await createNotification(`${candidature.nom} obtient le poste ${vote.poste}.`, 'membre', 'secretaire,admin');
+    if (elected) {
+      const newToken = generateToken(elected);
+      await createNotification(
+        JSON.stringify({ new_token: newToken, member_id: elected.id }),
+        'role_update',
+        cleanString(elected.username) || `member:${elected.id}`,
+      );
+    }
     sendJson(res, 200, { winner: candidature.member_id, poste: vote.poste });
     return;
   }
@@ -3002,6 +3017,13 @@ async function routeDemoApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/config') {
     return sendJson(res, 200, { nom_coop: 'Coopérative de démonstration' });
+  }
+  if (req.method === 'GET' && pathname === '/api/auth/me') {
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length)
+      : '';
+    return sendJson(res, 200, { token, member: req.user });
   }
   if (req.method === 'GET' && pathname === '/api/members') {
     return sendJson(res, 200, { members: store.members });
