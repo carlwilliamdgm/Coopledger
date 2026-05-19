@@ -64,16 +64,29 @@ const DEMO_SESSION = {
   data: null,
 };
 
-function notificationMatchesDestinataires(userRole, destinataires) {
+function notificationMatchesDestinataires(user, destinataires, options = {}) {
   const raw = cleanString(destinataires) || 'tous';
+  const allowAdmin = options.allowAdmin !== false;
   if (raw.toLowerCase() === 'tous') {
     return true;
   }
-  if (isAdminRole(userRole)) {
+  const meta = typeof user === 'object' && user !== null
+    ? user
+    : { role: user };
+  if (allowAdmin && isAdminRole(meta.role)) {
     return true;
   }
-  const normalizedUser = normalizeRole(userRole);
-  const targets = raw.split(',').map((segment) => normalizeRole(segment)).filter(Boolean);
+  const rawTargets = raw.split(',').map((segment) => cleanString(segment)).filter(Boolean);
+  const username = cleanString(meta.username).toLowerCase();
+  if (username && rawTargets.some((target) => target.toLowerCase() === username)) {
+    return true;
+  }
+  const memberId = cleanString(meta.memberId ?? meta.id);
+  if (memberId && rawTargets.some((target) => target === memberId || target === `member:${memberId}`)) {
+    return true;
+  }
+  const normalizedUser = normalizeRole(meta.role);
+  const targets = rawTargets.map((segment) => normalizeRole(segment)).filter(Boolean);
   return targets.includes(normalizedUser);
 }
 const BUREAU_POSTES = ['president', 'tresorier', 'secretaire', 'verificateur'];
@@ -619,7 +632,7 @@ function pushNotification(notification) {
   const payload = `data: ${JSON.stringify(notification)}\n\n`;
 
   for (const [client, meta] of sseClients) {
-    if (notificationMatchesDestinataires(meta.role, notification.destinataires)) {
+    if (notificationMatchesDestinataires(meta, notification.destinataires, { allowAdmin: notification.type !== 'role_update' })) {
       try {
         client.write(payload);
       } catch (err) {
@@ -643,22 +656,40 @@ async function dispatchWebPush(notification) {
     const allMembers = await pool.query('SELECT id FROM members');
     memberIds = allMembers.rows.map((row) => row.id);
   } else {
-    const targets = raw.split(',').map((segment) => normalizeRole(segment)).filter(Boolean);
+    const rawTargets = raw.split(',').map((segment) => cleanString(segment)).filter(Boolean);
+    const usernameTargets = rawTargets.map((segment) => segment.toLowerCase());
+    const directIds = rawTargets
+      .map((segment) => segment.match(/^member:(\d+)$/)?.[1] || (/^\d+$/.test(segment) ? segment : null))
+      .filter(Boolean)
+      .map(Number);
+    const usernameRes = usernameTargets.length || directIds.length
+      ? await pool.query(
+        `SELECT id FROM members
+         WHERE lower(username) = ANY($1::text[])
+            OR id = ANY($2::int[])`,
+        [usernameTargets, directIds],
+      )
+      : { rows: [] };
+    const directMemberIds = usernameRes.rows.map((row) => row.id);
+    const targets = rawTargets.map((segment) => normalizeRole(segment)).filter(Boolean);
     if (!targets.length) {
-      return;
+      memberIds = directMemberIds;
+    } else {
+      const res = await pool.query(
+        `SELECT id FROM members
+         WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = ANY($1::text[])`,
+        [targets]
+      );
+      memberIds = [...directMemberIds, ...res.rows.map((row) => row.id)];
     }
-    const res = await pool.query(
-      `SELECT id FROM members
-       WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = ANY($1::text[])`,
-      [targets]
-    );
-    memberIds = res.rows.map((row) => row.id);
-    const admins = await pool.query(
-      `SELECT id FROM members
-       WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = 'admin'`
-    );
     const merged = new Set(memberIds);
-    admins.rows.forEach((row) => merged.add(row.id));
+    if (notification.type !== 'role_update') {
+      const admins = await pool.query(
+        `SELECT id FROM members
+         WHERE translate(lower(role), 'éèêëàâäîïôöùûüç', 'eeeeaaaiioouuuc') = 'admin'`
+      );
+      admins.rows.forEach((row) => merged.add(row.id));
+    }
     memberIds = Array.from(merged);
   }
 
@@ -868,6 +899,29 @@ async function login(req, res) {
   sendJson(res, 200, { token, member: safeMember });
 }
 
+async function getCurrentAuth(req, res) {
+  await requireAuth(req, res);
+
+  const currentToken = cleanString(req.headers.authorization || req.headers.Authorization).replace(/^Bearer\s+/i, '');
+  if (Number(req.user?.id) === 0) {
+    return sendJson(res, 200, { token: currentToken, member: req.user });
+  }
+
+  const result = await pool.query(
+    `SELECT id, nom, username, email, role, role_expires_at, statut, created_at
+     FROM members
+     WHERE id = $1`,
+    [Number(req.user.id)],
+  );
+  const member = result.rows[0];
+  if (!member) {
+    throw new HttpError(404, 'Membre introuvable.');
+  }
+
+  const token = generateToken(member);
+  return sendJson(res, 200, { token, member });
+}
+
 async function initConfig(req, res) {
   const existing = await pool.query('SELECT 1 FROM config WHERE cle = $1 LIMIT 1', ['nom_coop']);
 
@@ -1043,11 +1097,19 @@ async function updateMemberRole(req, res, id) {
     throw new HttpError(404, 'Membre introuvable.');
   }
 
-  await createNotification(`Role attribue a ${result.rows[0].nom}: ${cleanRole}`, 'membre', 'secretaire,admin');
+  const updatedMember = result.rows[0];
+  const newToken = generateToken(updatedMember);
+
+  await createNotification(`Role attribue a ${updatedMember.nom}: ${cleanRole}`, 'membre', 'secretaire,admin');
+  await createNotification(
+    JSON.stringify({ new_token: newToken, member_id: updatedMember.id }),
+    'role_update',
+    cleanString(updatedMember.username) || `member:${updatedMember.id}`,
+  );
   if (isCallerAdmin) {
     await logAdminAction(`Role ${cleanRole} attribue au membre ${id}`, getRequestIp(req));
   }
-  sendJson(res, 200, { member: result.rows[0] });
+  sendJson(res, 200, { member: updatedMember, new_token: newToken });
 }
 
 async function listTransactions(req, res) {
@@ -2288,7 +2350,12 @@ async function notificationStream(req, res) {
     Connection: 'keep-alive',
   });
   res.write(': connected\n\n');
-  sseClients.set(res, { role: req.user?.role || 'membre' });
+  const meta = { role: req.user?.role || 'membre', username: req.user?.username, memberId: req.user?.id };
+  if (!meta.username && Number(req.user?.id) > 0) {
+    const member = await pool.query('SELECT username FROM members WHERE id = $1', [Number(req.user.id)]);
+    meta.username = member.rows[0]?.username;
+  }
+  sseClients.set(res, meta);
 
   req.on('close', () => {
     sseClients.delete(res);
@@ -2298,9 +2365,9 @@ async function notificationStream(req, res) {
 async function listNotifications(req, res) {
   await requireAuth(req, res);
   const result = await pool.query('SELECT * FROM notifications ORDER BY created_at DESC');
-  const role = req.user?.role;
+  const role = req.user;
   const filtered = result.rows.filter((row) =>
-    notificationMatchesDestinataires(role, row.destinataires),
+    notificationMatchesDestinataires(role, row.destinataires, { allowAdmin: row.type !== 'role_update' }),
   );
   sendJson(res, 200, { notifications: filtered });
 }
@@ -3053,6 +3120,7 @@ async function routeApi(req, res, pathname) {
 
   if (req.method === 'POST' && pathname === '/api/auth/register') return register(req, res);
   if (req.method === 'POST' && pathname === '/api/auth/login') return login(req, res);
+  if (req.method === 'GET' && pathname === '/api/auth/me') return getCurrentAuth(req, res);
 
   if (req.method === 'POST' && pathname === '/api/config/init') return initConfig(req, res);
   if (req.method === 'GET' && pathname === '/api/config') return getPublicConfig(req, res);

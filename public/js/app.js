@@ -549,6 +549,10 @@ function setToken(token, persist = false) {
   storage.setItem(TOKEN_KEY, token);
 }
 
+function tokenIsPersistent() {
+  return localStorage.getItem(TOKEN_KEY) !== null;
+}
+
 function clearSession() {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
@@ -641,13 +645,21 @@ function normalizeRole(role) {
 function filterNotificationsForCurrentUser(notifs) {
   if (!currentUser) return [];
   const userNorm = normalizeRole(currentUser.role);
-  if (userNorm === 'admin') return [...(notifs || [])];
 
   return (notifs || []).filter((n) => {
     const raw = String(n.destinataires ?? 'tous')
       .trim()
       .toLowerCase();
     if (raw === 'tous' || raw === '') return true;
+    const rawParts = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const username = String(currentUser.username || '').trim().toLowerCase();
+    if (username && rawParts.includes(username)) return true;
+    const memberId = String(currentUser.id ?? '').trim();
+    if (memberId && rawParts.some((part) => part === memberId || part === `member:${memberId}`)) return true;
+    if (userNorm === 'admin' && n.type !== 'role_update') return true;
     const parts = raw
       .split(',')
       .map((s) => normalizeRole(s.trim()))
@@ -2541,13 +2553,32 @@ async function attribuerRole(memberId) {
       payload.vote_id = voteId;
     }
 
-    await apiFetch(`/api/members/${memberId}/role`, {
+    const data = await apiFetch(`/api/members/${memberId}/role`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
+    if (data?.new_token && Number(data.member?.id) === Number(currentUser?.id)) {
+      setToken(data.new_token, tokenIsPersistent());
+      openSessionFromToken(data.new_token);
+    }
     await chargerMembres();
   } catch (error) {
     alert(error.message || 'Attribution impossible.');
+  }
+}
+
+async function refreshSession() {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const data = await apiFetch('/api/auth/me');
+    if (data.token) {
+      setToken(data.token, tokenIsPersistent());
+      openSessionFromToken(data.token);
+      showAppToast('Session actualisée.');
+    }
+  } catch (_) {
+    showAppToast('Reconnectez-vous pour actualiser vos permissions.');
   }
 }
 
@@ -2873,12 +2904,31 @@ function parseSseEvent(eventText) {
 
   try {
     const notification = JSON.parse(line.slice(6));
+    if (notification.type === 'role_update') {
+      handleRoleUpdateNotification(notification);
+      return;
+    }
     onPaiementRetourCotisationNotification(notification);
     if (filterNotificationsForCurrentUser([notification]).length) {
       notifications.unshift(notification);
     }
     renderNotifications();
     refreshDataAfterNotification(notification);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function handleRoleUpdateNotification(notification) {
+  try {
+    const payload = JSON.parse(notification.message || '{}');
+    if (Number(payload.member_id) !== Number(currentUser?.id) || !payload.new_token) {
+      return;
+    }
+
+    setToken(payload.new_token, tokenIsPersistent());
+    openSessionFromToken(payload.new_token);
+    showAppToast('Votre rôle a été mis à jour. Permissions actualisées.');
   } catch (error) {
     console.error(error);
   }
@@ -2970,6 +3020,7 @@ window.voter = voter;
 window.cloturerVote = cloturerVote;
 window.annulerVote = annulerVote;
 window.attribuerRole = attribuerRole;
+window.refreshSession = refreshSession;
 window.resetPassword = resetPassword;
 window.ajouterMembre = ajouterMembre;
 window.configurerCoop = configurerCoop;

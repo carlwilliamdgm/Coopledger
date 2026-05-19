@@ -35,6 +35,7 @@ function generateToken(member) {
   const payload = {
     id: member.id,
     nom: member.nom,
+    username: member.username,
     email: member.email,
     role: member.role,
     role_expires_at: member.role_expires_at,
